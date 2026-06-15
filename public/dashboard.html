@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard - Monitoring Presensi Korwil Sine</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'] },
+        }
+      }
+    }
+  </script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+    .loader { border-top-color: #0d6efd; animation: spinner 1.5s linear infinite; }
+    @keyframes spinner { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .bg-late { background-color: #fef9c3 !important; }
+    .bg-outside { background-color: #fee2e2 !important; }
+    .bg-psw { background-color: #d1fae5 !important; }
+    @keyframes slideInLeft { from { transform: translateX(-100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    @keyframes slideInRight { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    .animate-slide-left { animation: slideInLeft 0.6s ease-out forwards; }
+    .animate-slide-right { animation: slideInRight 0.6s ease-out forwards; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans antialiased">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    // ======================= FUNGSI PANGGIL API =======================
+    const callAPI = async (action, ...args) => {
+      const res = await fetch('/api/proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, args })
+      });
+      return await res.json();
+    };
+
+    const lembagaList = [
+      "SDN GENDOL 1","SDN GIRIKERTO 1","SDN GIRIKERTO 2","SDN HARGOSARI 1","SDN HARGOSARI 2",
+      "SDN JAGIR 1","SDN TULAKAN 4","SDN JAGIR 2","SDN KUNIRAN 3","SDN JAGIR 3","SDN JAGIR 4",
+      "SDN KAUMAN 1","SDN KETANGGUNG 1","SDN KUNIRAN 1","SDN KUNIRAN 2","SDN NGRENDENG 2",
+      "SDN SINE 1","SDN PANDANSARI","SDN POCOL","SDN SINE 3","SDN SUMBEREJO 1","SDN SUMBERSARI 1",
+      "SDN SUMBERSARI 2","SDN TULAKAN 1","SDN TULAKAN 2","SDN TULAKAN 3","SDN TULAKAN 6",
+      "SDN WONOSARI 1","SDN WONOSARI 2"
+    ];
+
+    const extractFileIdFromDriveUrl = (url) => {
+      if (!url) return null;
+      let match = url.match(/\/file\/d\/([^\/]+)/);
+      if (match) return match[1];
+      match = url.match(/[?&]id=([^&]+)/);
+      if (match) return match[1];
+      match = url.match(/\/d\/([^\/]+)\/preview/);
+      return match ? match[1] : null;
+    };
+
+    const checkLateStatus = (waktuStr, jenisPresensi) => {
+      if (!waktuStr || !jenisPresensi || jenisPresensi.toLowerCase() !== 'datang') return false;
+      try {
+        const parts = waktuStr.split('pukul ');
+        if (parts.length < 2) return false;
+        const timeString = parts[1].trim();
+        const [hh, mm] = timeString.split(/[\.\:]/);
+        const totalMinutes = (parseInt(hh,10) * 60) + parseInt(mm,10);
+        return totalMinutes > 420;
+      } catch(e) { return false; }
+    };
+
+    const isOutsideRadius = (ketRadius) => ketRadius && ketRadius.toLowerCase().includes('luar radius');
+    const isTidakHadir = (ketRadius) => ketRadius && (ketRadius.toLowerCase().includes('tidak hadir') || ketRadius.toLowerCase().includes('hari libur'));
+    const normalizeName = (name) => name ? name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() : '';
+
+    const parsePresensiDate = (waktuStr) => {
+      if (!waktuStr) return null;
+      const parts = waktuStr.split('pukul')[0].trim();
+      const dateParts = parts.split(', ')[1];
+      if (!dateParts) return null;
+      const [day, monthName, year] = dateParts.split(' ');
+      const monthMap = { 'Januari':1,'Februari':2,'Maret':3,'April':4,'Mei':5,'Juni':6,'Juli':7,'Agustus':8,'September':9,'Oktober':10,'November':11,'Desember':12 };
+      const month = monthMap[monthName];
+      if (!month) return null;
+      return `${day.padStart(2,'0')}/${month.toString().padStart(2,'0')}/${year}`;
+    };
+
+    const dateToNumber = (dateStr) => {
+      if (!dateStr) return null;
+      const [dd, mm, yyyy] = dateStr.split('/').map(Number);
+      if (!dd || !mm || !yyyy) return null;
+      return yyyy * 10000 + mm * 100 + dd;
+    };
+
+    const parseIjinDate = (dateStr) => {
+      if (!dateStr) return null;
+      const [year, month, day] = dateStr.split('-');
+      if (!year || !month || !day) return null;
+      return `${day.padStart(2,'0')}/${month.padStart(2,'0')}/${year}`;
+    };
+
+    const isDateInRange = (dateStr, startStr, endStr) => {
+      if (!dateStr || !startStr || !endStr) return false;
+      const toNum = (d) => { const [dd,mm,yyyy] = d.split('/').map(Number); return yyyy*10000 + mm*100 + dd; };
+      const dateNum = toNum(dateStr);
+      const startNum = toNum(startStr);
+      const endNum = toNum(endStr);
+      return dateNum >= startNum && dateNum <= endNum;
+    };
+
+    const enrichPresensiWithIjin = (presensi, ijin) => {
+      if (!presensi || !ijin) return presensi;
+      const approvedIjin = ijin.filter(item => item.Status && item.Status.toLowerCase() === 'disetujui');
+      return presensi.map(p => {
+        const psw = approvedIjin.some(item => {
+          if (normalizeName(p['Nama Pegawai'] || '') !== normalizeName(item['Nama Pegawai'] || '')) return false;
+          const presensiDate = parsePresensiDate(p['Waktu']);
+          if (!presensiDate) return false;
+          const startDate = parseIjinDate(item['Tanggal Awal']);
+          const endDate = parseIjinDate(item['Tanggal Berakir']);
+          if (!startDate || !endDate) return false;
+          return isDateInRange(presensiDate, startDate, endDate);
+        });
+        return psw ? { ...p, isPSW: true, displayRadius: 'PSW' } : { ...p, isPSW: false, displayRadius: p['Keterangan Radius'] };
+      });
+    };
+
+    const TablePagination = ({ currentPage, totalItems, rowsPerPage, onPageChange, onRowsPerPageChange }) => {
+      const totalPages = Math.ceil(totalItems / rowsPerPage) || 1;
+      const [jumpInput, setJumpInput] = useState('');
+      const handleJump = () => {
+        let pageNum = parseInt(jumpInput,10);
+        if (isNaN(pageNum)) pageNum = 1;
+        pageNum = Math.min(Math.max(1, pageNum), totalPages);
+        onPageChange(pageNum);
+        setJumpInput('');
+      };
+      return (
+        <div className="flex flex-col sm:flex-row items-center justify-between mt-4 px-4 py-3 bg-white rounded-xl shadow-sm border gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-slate-600">Tampilkan</span>
+            <select className="border rounded-lg px-2 py-1 text-sm" value={rowsPerPage} onChange={(e) => { const val = e.target.value === 'all' ? totalItems : Number(e.target.value); onRowsPerPageChange(val); onPageChange(1); }}>
+              <option value={10}>10</option><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option><option value="all">Semua</option>
+            </select>
+            <span className="text-sm text-slate-600">dari {totalItems} data</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => onPageChange(currentPage-1)} disabled={currentPage===1} className={`px-3 py-1 rounded-lg text-sm font-medium ${currentPage===1 ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}>Previous</button>
+            <span className="text-sm text-slate-700">Halaman {currentPage} dari {totalPages}</span>
+            <button onClick={() => onPageChange(currentPage+1)} disabled={currentPage===totalPages || totalPages===0} className={`px-3 py-1 rounded-lg text-sm font-medium ${currentPage===totalPages || totalPages===0 ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}>Next</button>
+          </div>
+          <div className="flex items-center gap-2">
+            <input type="number" min="1" max={totalPages} value={jumpInput} onChange={e=>setJumpInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleJump()} className="w-16 border rounded-lg px-2 py-1 text-sm text-center" placeholder="Halaman" />
+            <button onClick={handleJump} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition">Go</button>
+          </div>
+        </div>
+      );
+    };
+
+    // ======================= KOMPONEN DASHBOARD =======================
+    const Dashboard = ({ presensiData, ijinData, pegawaiData }) => {
+      const chartRef = useRef(null);
+      const chartInstance = useRef(null);
+      const totalLembaga = lembagaList.length;
+      const totalPegawai = pegawaiData ? pegawaiData.length : 0;
+      const jumlahDatang = presensiData.filter(p => (p['Jenis Presensi']||'').toLowerCase()==='datang').length;
+      const jumlahPulang = presensiData.filter(p => (p['Jenis Presensi']||'').toLowerCase()==='pulang').length;
+      const approvedIjin = (ijinData||[]).filter(ij=>ij.Status && ij.Status.toLowerCase()==='disetujui');
+      const jumlahDinasLuar = approvedIjin.filter(ij=>(ij['Jenis Ijin']||'')==='Dinas Luar').length;
+      const jumlahIjin = approvedIjin.filter(ij=>(ij['Jenis Ijin']||'')==='Ijin').length;
+      const jumlahSakit = approvedIjin.filter(ij=>(ij['Jenis Ijin']||'')==='Sakit').length;
+      const pswDiajukan = ijinData?ijinData.length:0;
+      const pswDisetujui = approvedIjin.length;
+      const pswDitolak = ijinData?ijinData.filter(ij=>ij.Status && ij.Status.toLowerCase()==='ditolak').length:0;
+      useEffect(()=>{
+        if(chartRef.current){
+          if(chartInstance.current) chartInstance.current.destroy();
+          chartInstance.current = new Chart(chartRef.current,{
+            type:'bar',
+            data:{ labels:['Datang','Pulang','Dinas Luar','Ijin','Sakit'], datasets:[{ label:'Jumlah', data:[jumlahDatang,jumlahPulang,jumlahDinasLuar,jumlahIjin,jumlahSakit], backgroundColor:['#3b82f6','#f59e0b','#10b981','#8b5cf6','#ec489a'], borderRadius:8 }] },
+            options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{position:'top'}, tooltip:{callbacks:{label:(ctx)=>`${ctx.raw} orang`}} } }
+          });
+        }
+        return ()=>{if(chartInstance.current) chartInstance.current.destroy();};
+      },[jumlahDatang,jumlahPulang,jumlahDinasLuar,jumlahIjin,jumlahSakit]);
+      return (
+        <div className="space-y-8">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="bg-white p-6 rounded-2xl shadow-sm border-l-8 border-l-blue-500"><div className="flex items-center justify-between"><div><p className="text-xs text-slate-500 font-bold uppercase">Total Lembaga</p><p className="text-3xl font-black text-slate-800">{totalLembaga}</p></div><div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center"><i className="fas fa-building text-blue-600 text-xl"></i></div></div></div>
+            <div className="bg-white p-6 rounded-2xl shadow-sm border-l-8 border-l-emerald-500"><div className="flex items-center justify-between"><div><p className="text-xs text-slate-500 font-bold uppercase">Total Pegawai</p><p className="text-3xl font-black text-slate-800">{totalPegawai}</p></div><div className="w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center"><i className="fas fa-users text-emerald-600 text-xl"></i></div></div></div>
+            <div className="bg-white p-6 rounded-2xl shadow-sm border-l-8 border-l-amber-500"><div className="flex items-center justify-between"><div><p className="text-xs text-slate-500 font-bold uppercase">Absen Datang</p><p className="text-3xl font-black text-slate-800">{jumlahDatang}</p></div><div className="w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center"><i className="fas fa-sign-in-alt text-amber-600 text-xl"></i></div></div></div>
+            <div className="bg-white p-6 rounded-2xl shadow-sm border-l-8 border-l-orange-500"><div className="flex items-center justify-between"><div><p className="text-xs text-slate-500 font-bold uppercase">Absen Pulang</p><p className="text-3xl font-black text-slate-800">{jumlahPulang}</p></div><div className="w-12 h-12 bg-orange-100 rounded-full flex items-center justify-center"><i className="fas fa-sign-out-alt text-orange-600 text-xl"></i></div></div></div>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="bg-white p-6 rounded-2xl shadow-sm border"><h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><i className="fas fa-chart-bar text-blue-500"></i> Grafik Kehadiran & Ijin</h3><div className="h-72"><canvas ref={chartRef}></canvas></div></div>
+            <div className="bg-white p-6 rounded-2xl shadow-sm border"><h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><i className="fas fa-file-signature text-purple-500"></i> Statistik PSW</h3><div className="space-y-6"><div className="grid grid-cols-3 gap-4"><div className="text-center p-3 bg-blue-50 rounded-xl"><p className="text-xs text-blue-600 font-bold">Diajukan</p><p className="text-2xl font-black text-blue-700">{pswDiajukan}</p></div><div className="text-center p-3 bg-green-50 rounded-xl"><p className="text-xs text-green-600 font-bold">Disetujui</p><p className="text-2xl font-black text-green-700">{pswDisetujui}</p></div><div className="text-center p-3 bg-red-50 rounded-xl"><p className="text-xs text-red-600 font-bold">Ditolak</p><p className="text-2xl font-black text-red-700">{pswDitolak}</p></div></div><div className="pt-4 border-t"><div className="flex justify-between items-center mb-2"><span className="text-sm font-semibold text-slate-600">Dinas Luar</span><span className="text-lg font-black text-indigo-600">{jumlahDinasLuar}</span></div><div className="flex justify-between items-center mb-2"><span className="text-sm font-semibold text-slate-600">Ijin</span><span className="text-lg font-black text-indigo-600">{jumlahIjin}</span></div><div className="flex justify-between items-center"><span className="text-sm font-semibold text-slate-600">Sakit</span><span className="text-lg font-black text-indigo-600">{jumlahSakit}</span></div></div></div></div>
+          </div>
+        </div>
+      );
+    };
+
+    // ======================= KOMPONEN MONITORING PRESENSI =======================
+    const MonitoringPresensi = ({ data, refreshData, userRole, userLembaga }) => {
+      const [filterLembaga, setFilterLembaga] = useState('');
+      const [filterNama, setFilterNama] = useState('');
+      const [editingRow, setEditingRow] = useState(null);
+      const [editVal, setEditVal] = useState('');
+      const [modalImg, setModalImg] = useState(null);
+      const [modalMap, setModalMap] = useState(null);
+      const [currentPage, setCurrentPage] = useState(1);
+      const [rowsPerPage, setRowsPerPage] = useState(10);
+      const [showRangeModal, setShowRangeModal] = useState(false);
+      const [rangeStart, setRangeStart] = useState('');
+      const [rangeEnd, setRangeEnd] = useState('');
+      const [rangeStatus, setRangeStatus] = useState('Libur');
+      const [rangeKeterangan, setRangeKeterangan] = useState('');
+      const [showCRUDModal, setShowCRUDModal] = useState(false);
+      const [crudMode, setCrudMode] = useState('add');
+      const [currentRowIndex, setCurrentRowIndex] = useState(null);
+      const [formValues, setFormValues] = useState({ 'Hari Tanggal':'','Waktu':'','Jenis Presensi':'','Nama Lembaga':'','Nama Pegawai':'','Nip':'','Bukti Dukung':'','Latitude':'','Longitude':'','Jarak Absen':'','Keterangan Radius':'','Keterangan Bukti':'' });
+      const canEditLembaga = userRole==='Admin'||userRole==='User'||userRole==='Superuser';
+      const canManageLibur = userRole==='Admin'||userRole==='Superuser';
+      const canViewBukti = userRole==='Admin'||userRole==='User'||userRole==='Superuser';
+      const isAdmin = userRole==='Admin';
+      
+      const normalizeCoordinate = (coord) => {
+        if (coord === null || coord === undefined || coord === '') return '';
+        return coord.toString().replace(/,/g, '.').trim();
+      };
+      
+      useEffect(()=>{ if(!canEditLembaga && userLembaga) setFilterLembaga(userLembaga); },[canEditLembaga,userLembaga]);
+      const filtered = useMemo(()=>data.filter(i=>(i['Nama Lembaga']||'').toLowerCase().includes(filterLembaga.toLowerCase()) && (i['Nama Pegawai']||'').toLowerCase().includes(filterNama.toLowerCase())),[data,filterLembaga,filterNama]);
+      useEffect(()=>setCurrentPage(1),[filterLembaga,filterNama]);
+      const totalItems = filtered.length;
+      useEffect(()=>{ if(rowsPerPage>totalItems && totalItems>0) setRowsPerPage(totalItems); else if(totalItems===0) setRowsPerPage(10); },[totalItems,rowsPerPage]);
+      const effectiveRowsPerPage = rowsPerPage===totalItems?totalItems:rowsPerPage;
+      const paginatedData = filtered.slice((currentPage-1)*effectiveRowsPerPage, currentPage*effectiveRowsPerPage);
+      const handleSaveKet = async(idx)=>{ const res=await callAPI('updateKeteranganBukti',idx,editVal); if(res.success){ Swal.fire({icon:'success',title:'Tersimpan',timer:1000,showConfirmButton:false}); setEditingRow(null); refreshData(); } };
+      const openAddModal=()=>{ setCrudMode('add'); setCurrentRowIndex(null); setFormValues({ 'Hari Tanggal':'','Waktu':'','Jenis Presensi':'','Nama Lembaga':'','Nama Pegawai':'','Nip':'','Bukti Dukung':'','Latitude':'','Longitude':'','Jarak Absen':'','Keterangan Radius':'','Keterangan Bukti':'' }); setShowCRUDModal(true); };
+      const openEditModal=(item)=>{ setCrudMode('edit'); setCurrentRowIndex(item._rowIndex); setFormValues({ 'Hari Tanggal':item['Hari Tanggal']||'','Waktu':item['Waktu']||'','Jenis Presensi':item['Jenis Presensi']||'','Nama Lembaga':item['Nama Lembaga']||'','Nama Pegawai':item['Nama Pegawai']||'','Nip':item['Nip']||'','Bukti Dukung':item['Bukti Dukung']||'','Latitude':item['Latitude']||'','Longitude':item['Longitude']||'','Jarak Absen':item['Jarak Absen']||'','Keterangan Radius':item['Keterangan Radius']||'','Keterangan Bukti':item['Keterangan Bukti']||'' }); setShowCRUDModal(true); };
+      const handleDelete=async(rowIndex,namaPegawai)=>{ const confirm=await Swal.fire({title:'Hapus Presensi?',text:`Yakin ingin menghapus data presensi ${namaPegawai}?`,icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',cancelButtonColor:'#334155',confirmButtonText:'Ya, Hapus'}); if(confirm.isConfirmed){ const loading=Swal.fire({title:'Menghapus...',allowOutsideClick:false,didOpen:()=>Swal.showLoading()}); const res=await callAPI('deletePresensi',rowIndex); loading.close(); if(res.success){ Swal.fire({icon:'success',title:'Terhapus',timer:1500,showConfirmButton:false}); refreshData(); } else Swal.fire('Error','Gagal menghapus data','error'); } };
+      const handleSubmitCRUD=async()=>{ if(!formValues['Waktu']||!formValues['Jenis Presensi']||!formValues['Nama Pegawai']){ Swal.fire('Peringatan','Waktu, Jenis Presensi, dan Nama Pegawai wajib diisi.','warning'); return; } const loading=Swal.fire({title:'Menyimpan...',allowOutsideClick:false,didOpen:()=>Swal.showLoading()}); let res; if(crudMode==='add') res=await callAPI('addPresensi',formValues); else res=await callAPI('updatePresensi',currentRowIndex,formValues); loading.close(); if(res.success){ Swal.fire({icon:'success',title:crudMode==='add'?'Data Ditambahkan':'Data Diperbarui',timer:1500,showConfirmButton:false}); setShowCRUDModal(false); refreshData(); } else Swal.fire('Error','Gagal menyimpan data','error'); };
+      return (
+        <div className="space-y-6">
+          <div className="bg-white p-5 rounded-2xl shadow-sm border flex flex-wrap gap-4 items-center"><h3 className="font-bold text-lg text-slate-700 w-full md:w-auto mr-4">Filter Data Presensi:</h3><input type="text" placeholder="Cari Lembaga..." className={`border p-3 rounded-xl flex-1 text-sm outline-none focus:border-blue-500 ${!canEditLembaga?'bg-slate-100 cursor-not-allowed':''}`} value={filterLembaga} onChange={e=>canEditLembaga&&setFilterLembaga(e.target.value)} disabled={!canEditLembaga} /><input type="text" placeholder="Cari Nama Pegawai..." className="border p-3 rounded-xl flex-1 text-sm outline-none focus:border-blue-500" value={filterNama} onChange={e=>setFilterNama(e.target.value)} />{!canEditLembaga&&userLembaga&&<span className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded-full"><i className="fas fa-lock mr-1"></i> Filter lembaga dikunci</span>}{canManageLibur&&<button onClick={()=>setShowRangeModal(true)} className="bg-purple-600 hover:bg-purple-700 text-white px-5 py-3 rounded-xl font-bold shadow-sm flex items-center gap-2 transition"><i className="fas fa-calendar-alt"></i> Atur Libur Manual</button>}{isAdmin&&<button onClick={openAddModal} className="bg-green-600 hover:bg-green-700 text-white px-5 py-3 rounded-xl font-bold shadow-sm flex items-center gap-2 transition"><i className="fas fa-plus-circle"></i> Tambah Presensi</button>}</div>
+          <div className="bg-white rounded-2xl shadow-sm border overflow-hidden"><div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead className="bg-blue-700 text-white border-b"><tr><th className="px-4 py-4">Waktu Presensi</th><th className="px-4 py-4">Lembaga</th><th className="px-4 py-4">Pegawai</th><th className="px-4 py-4 text-center">Bukti/Map</th><th className="px-4 py-4">Radius Status</th><th className="px-4 py-4">Ket. Bukti</th>{isAdmin&&<th className="px-4 py-4 text-center">Aksi</th>}</tr></thead><tbody className="divide-y">{paginatedData.map((item,i)=>{ const outRadius=isOutsideRadius(item.displayRadius); const late=checkLateStatus(item['Waktu'],item['Jenis Presensi']); const tidakHadir=isTidakHadir(item.displayRadius); const isPSW=item.isPSW; let bgClass="bg-white"; if(isPSW) bgClass="bg-psw hover:bg-green-200"; else if(tidakHadir) bgClass="bg-black text-white"; else if(outRadius) bgClass="bg-outside hover:bg-red-200"; else if(late) bgClass="bg-late hover:bg-yellow-200"; return (<tr key={i} className={`${bgClass} transition-colors text-slate-700`}><td className="px-4 py-3 whitespace-nowrap"><span className="font-medium block">{item['Waktu']}</span><span className="text-[10px] px-1.5 py-0.5 bg-slate-200 rounded text-slate-600 font-bold uppercase">{item['Jenis Presensi']}</span></td><td className="px-4 py-3">{item['Nama Lembaga']}</td><td className="px-4 py-3"><div className="font-bold">{item['Nama Pegawai']}</div><div className="text-xs opacity-70">{item['Nip']}</div></td><td className="px-4 py-3 text-center"><div className="flex justify-center gap-2">{canViewBukti?<button onClick={()=>setModalImg(item['Bukti Dukung'])} className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center hover:bg-blue-200 shadow-sm"><i className="fas fa-image"></i></button>:<span className="w-8 h-8 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center cursor-not-allowed"><i className="fas fa-lock"></i></span>}<button onClick={()=>{ const lat = normalizeCoordinate(item.Latitude); const lng = normalizeCoordinate(item.Longitude); if(lat && lng) setModalMap({lat, lng}); else Swal.fire('Info', 'Koordinat tidak tersedia', 'info'); }} className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center hover:bg-emerald-200 shadow-sm"><i className="fas fa-map-marker-alt"></i></button></div></td><td className="px-4 py-3"><span className={`px-2 py-1 rounded text-[10px] font-black uppercase ${isPSW?'bg-green-600 text-white':tidakHadir?'bg-black text-white':outRadius?'bg-red-600 text-white':'bg-green-600 text-white'}`}>{item.displayRadius}</span><div className="text-[10px] mt-1 text-slate-500 font-medium">{item['Jarak Absen']}</div></td><td className="px-4 py-3 min-w-[150px]">{editingRow===item._rowIndex?(<div className="flex gap-1"><input className="border p-1 rounded text-xs flex-1" value={editVal} onChange={e=>setEditVal(e.target.value)} autoFocus /><button onClick={()=>handleSaveKet(item._rowIndex)} className="bg-green-600 text-white px-2 py-1 rounded shadow-sm"><i className="fas fa-check"></i></button></div>):(<div className="flex justify-between items-center group cursor-pointer" onClick={()=>{ setEditingRow(item._rowIndex); setEditVal(item['Keterangan Bukti']||''); }}><span className="truncate max-w-[120px]">{item['Keterangan Bukti']||'-'}</span><i className="fas fa-pencil-alt text-slate-300 group-hover:text-blue-500 text-xs transition"></i></div>)}</td>{isAdmin&&(<td className="px-4 py-3 text-center"><div className="flex gap-2 justify-center"><button onClick={()=>openEditModal(item)} className="text-blue-600 hover:bg-blue-50 w-8 h-8 rounded-lg flex items-center justify-center transition"><i className="fas fa-edit"></i></button><button onClick={()=>handleDelete(item._rowIndex,item['Nama Pegawai'])} className="text-red-600 hover:bg-red-50 w-8 h-8 rounded-lg flex items-center justify-center transition"><i className="fas fa-trash-alt"></i></button></div></td>)}</tr>);})}{paginatedData.length===0&&(<tr><td colSpan={isAdmin?7:6} className="text-center py-10 text-slate-400 font-medium italic">Data tidak ditemukan atau belum dimuat...</td></tr>)}</tbody></table></div><TablePagination currentPage={currentPage} totalItems={totalItems} rowsPerPage={rowsPerPage} onPageChange={setCurrentPage} onRowsPerPageChange={setRowsPerPage} /></div>
+          {modalImg&&(<div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={()=>setModalImg(null)}><div className="relative max-w-4xl w-full bg-white rounded-xl shadow-2xl overflow-hidden" onClick={e=>e.stopPropagation()}><div className="p-4 flex justify-between items-center bg-blue-700 text-white"><h4 className="font-bold flex items-center gap-2"><i className="fas fa-file-image text-blue-200"></i> Bukti Dukung</h4><button onClick={()=>setModalImg(null)} className="text-3xl leading-none">&times;</button></div><div className="w-full h-[80vh] bg-slate-100 flex items-center justify-center">{modalImg.includes('drive.google.com')?<iframe src={`https://drive.google.com/file/d/${extractFileIdFromDriveUrl(modalImg)}/preview`} className="w-full h-full" allow="autoplay" sandbox="allow-same-origin allow-scripts"></iframe>:<img src={modalImg} alt="Bukti Dukung" className="w-full h-full object-contain" onError={(e)=>{ e.target.onerror=null; e.target.parentNode.innerHTML='<div class="flex flex-col items-center justify-center h-full p-8"><i class="fas fa-exclamation-triangle text-4xl text-red-500 mb-4"></i><p class="text-lg font-bold text-gray-700">Gambar tidak dapat ditampilkan</p><p class="text-sm text-gray-500 mt-2">Kesalahan memuat gambar</p></div>'; }} />}</div></div></div>)}
+          {modalMap&&(<div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={()=>setModalMap(null)}><div className="w-full max-w-3xl bg-white rounded-2xl overflow-hidden shadow-2xl" onClick={e=>e.stopPropagation()}><div className="p-4 flex justify-between items-center bg-blue-700 text-white"><h4 className="font-bold flex items-center gap-2"><i className="fas fa-map-marked-alt text-blue-200"></i>Lokasi Presensi</h4><button onClick={()=>setModalMap(null)} className="text-3xl leading-none">&times;</button></div><iframe width="100%" height="450" frameBorder="0" style={{border:0}} src={`https://maps.google.com/maps?q=${modalMap.lat},${modalMap.lng}&z=16&output=embed`} allowFullScreen></iframe></div></div>)}
+          {showRangeModal&&(<div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={()=>setShowRangeModal(false)}><div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg" onClick={e=>e.stopPropagation()}><div className="p-6 border-b flex justify-between items-center bg-blue-700 text-white"><h4 className="text-xl font-bold flex items-center gap-2"><i className="fas fa-calendar-alt text-purple-200"></i> Atur Libur Manual</h4><button onClick={()=>setShowRangeModal(false)} className="text-3xl leading-none">&times;</button></div><div className="p-6 space-y-4"><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Tanggal Awal</label><input type="date" className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-purple-500 outline-none" value={rangeStart} onChange={e=>setRangeStart(e.target.value)} /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Tanggal Akhir</label><input type="date" className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-purple-500 outline-none" value={rangeEnd} onChange={e=>setRangeEnd(e.target.value)} /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Status</label><select className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-purple-500 outline-none" value={rangeStatus} onChange={e=>setRangeStatus(e.target.value)}><option value="Libur">Libur</option><option value="Cuti Bersama">Cuti Bersama</option><option value="Izin">Izin</option><option value="Sakit">Sakit</option></select></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Keterangan (opsional)</label><textarea className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-purple-500 outline-none" rows="3" value={rangeKeterangan} onChange={e=>setRangeKeterangan(e.target.value)} placeholder="Misal: Libur Nasional"></textarea></div><div className="flex justify-end gap-3 pt-4"><button onClick={()=>setShowRangeModal(false)} className="px-6 py-3 border-2 border-slate-300 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition">Batal</button><button onClick={async()=>{ if(!rangeStart||!rangeEnd){ Swal.fire('Peringatan','Tanggal awal dan akhir harus diisi','warning'); return; } const loading=Swal.fire({title:'Memproses...',allowOutsideClick:false,didOpen:()=>Swal.showLoading()}); const res=await callAPI('setStatusRentang',rangeStart,rangeEnd,rangeStatus,rangeKeterangan); loading.close(); if(res.success){ Swal.fire({icon:'success',title:'Berhasil',text:`${res.updated} data diupdate`}); setShowRangeModal(false); refreshData(); }else{ Swal.fire('Error','Gagal mengupdate data','error'); } }} className="px-6 py-3 bg-purple-600 text-white rounded-xl font-bold shadow-lg hover:bg-purple-700 transition">Terapkan</button></div></div></div></div>)}
+          {showCRUDModal&&(<div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={()=>setShowCRUDModal(false)}><div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto" onClick={e=>e.stopPropagation()}><div className="p-6 border-b flex justify-between items-center bg-blue-700 text-white sticky top-0"><h4 className="text-xl font-bold flex items-center gap-2"><i className={`fas ${crudMode==='add'?'fa-plus-circle':'fa-edit'} text-blue-200`}></i>{crudMode==='add'?'Tambah Presensi Baru':'Edit Presensi'}</h4><button onClick={()=>setShowCRUDModal(false)} className="text-3xl leading-none hover:text-slate-300">&times;</button></div><div className="p-6 space-y-4"><div className="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Hari Tanggal</label><input type="text" name="Hari Tanggal" value={formValues['Hari Tanggal']} onChange={e=>setFormValues({...formValues,'Hari Tanggal':e.target.value})} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Waktu *</label><input type="text" name="Waktu" value={formValues['Waktu']} onChange={e=>setFormValues({...formValues,'Waktu':e.target.value})} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" required /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Jenis Presensi *</label><select name="Jenis Presensi" value={formValues['Jenis Presensi']} onChange={e=>setFormValues({...formValues,'Jenis Presensi':e.target.value})} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" required><option value="">Pilih</option><option value="Datang">Datang</option><option value="Pulang">Pulang</option></select></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Nama Lembaga</label><input type="text" name="Nama Lembaga" value={formValues['Nama Lembaga']} onChange={e=>setFormValues({...formValues,'Nama Lembaga':e.target.value})} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Nama Pegawai *</label><input type="text" name="Nama Pegawai" value={formValues['Nama Pegawai']} onChange={e=>setFormValues({...formValues,'Nama Pegawai':e.target.value})} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" required /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Nip</label><input type="text" name="Nip" value={formValues['Nip']} onChange={e=>setFormValues({...formValues,'Nip':e.target.value})} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Bukti Dukung</label><input type="text" name="Bukti Dukung" value={formValues['Bukti Dukung']} onChange={e=>setFormValues({...formValues,'Bukti Dukung':e.target.value})} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Latitude</label><input type="text" name="Latitude" value={formValues['Latitude']} onChange={e=>setFormValues({...formValues,'Latitude':e.target.value})} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Longitude</label><input type="text" name="Longitude" value={formValues['Longitude']} onChange={e=>setFormValues({...formValues,'Longitude':e.target.value})} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Jarak Absen</label><input type="text" name="Jarak Absen" value={formValues['Jarak Absen']} onChange={e=>setFormValues({...formValues,'Jarak Absen':e.target.value})} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Keterangan Radius</label><input type="text" name="Keterangan Radius" value={formValues['Keterangan Radius']} onChange={e=>setFormValues({...formValues,'Keterangan Radius':e.target.value})} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Keterangan Bukti</label><input type="text" name="Keterangan Bukti" value={formValues['Keterangan Bukti']} onChange={e=>setFormValues({...formValues,'Keterangan Bukti':e.target.value})} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div></div><div className="flex justify-end gap-3 pt-4 border-t"><button onClick={()=>setShowCRUDModal(false)} className="px-6 py-3 border-2 border-slate-300 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition">Batal</button><button onClick={handleSubmitCRUD} className="px-6 py-3 bg-blue-600 text-white rounded-xl font-bold shadow-lg hover:bg-blue-700 transition">Simpan</button></div></div></div></div>)}
+        </div>
+      );
+    };
+
+    // ======================= KOMPONEN DOKUMEN IJIN =======================
+    const DokumenIjin = ({ data, refreshData, userRole, userLembaga }) => {
+      const [modalPdf, setModalPdf] = useState(null);
+      const [editRow, setEditRow] = useState(null);
+      const [status, setStatus] = useState('');
+      const [ket, setKet] = useState('');
+      const [filterLembaga, setFilterLembaga] = useState('');
+      const [filterNama, setFilterNama] = useState('');
+      const [currentPage, setCurrentPage] = useState(1);
+      const [rowsPerPage, setRowsPerPage] = useState(10);
+      const canEditLembaga = userRole==='Admin'||userRole==='User'||userRole==='Superuser';
+      const canEditData = userRole==='Admin'||userRole==='User'||userRole==='Superuser';
+      useEffect(()=>{ if(!canEditLembaga && userLembaga) setFilterLembaga(userLembaga); },[canEditLembaga,userLembaga]);
+      const filtered = useMemo(()=>data.filter(item=>(item['Nama Lembaga']||'').toLowerCase().includes(filterLembaga.toLowerCase()) && (item['Nama Pegawai']||'').toLowerCase().includes(filterNama.toLowerCase())),[data,filterLembaga,filterNama]);
+      useEffect(()=>setCurrentPage(1),[filterLembaga,filterNama]);
+      const totalItems = filtered.length;
+      useEffect(()=>{ if(rowsPerPage>totalItems && totalItems>0) setRowsPerPage(totalItems); else if(totalItems===0) setRowsPerPage(10); },[totalItems,rowsPerPage]);
+      const effectiveRowsPerPage = rowsPerPage===totalItems?totalItems:rowsPerPage;
+      const paginatedData = filtered.slice((currentPage-1)*effectiveRowsPerPage, currentPage*effectiveRowsPerPage);
+      const handleSave=async(idx)=>{ const res=await callAPI('updateDokumenIjin',idx,status,ket); if(res.success){ Swal.fire({icon:'success',title:'Berhasil Update',timer:1000,showConfirmButton:false}); setEditRow(null); refreshData(); } };
+      const handleDelete=async(rowIndex,nama)=>{ const confirm=await Swal.fire({title:'Hapus Dokumen Ijin?',text:`Yakin ingin menghapus pengajuan dari ${nama}?`,icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',cancelButtonColor:'#334155',confirmButtonText:'Ya, Hapus'}); if(confirm.isConfirmed){ const res=await callAPI('deleteDokumenIjin',rowIndex); if(res.success){ Swal.fire('Terhapus','Data berhasil dihapus','success'); refreshData(); }else{ Swal.fire('Error','Gagal menghapus data','error'); } } };
+      return (
+        <div className="space-y-6">
+          <div className="bg-white p-5 rounded-2xl shadow-sm border flex flex-wrap gap-4 items-center"><h3 className="font-bold text-lg text-slate-700 w-full md:w-auto mr-4">Filter Dokumen Ijin:</h3><input type="text" placeholder="Cari Lembaga..." className={`border p-3 rounded-xl flex-1 text-sm outline-none focus:border-blue-500 ${!canEditLembaga?'bg-slate-100 cursor-not-allowed':''}`} value={filterLembaga} onChange={e=>canEditLembaga&&setFilterLembaga(e.target.value)} disabled={!canEditLembaga} /><input type="text" placeholder="Cari Nama Pegawai..." className="border p-3 rounded-xl flex-1 text-sm outline-none focus:border-blue-500" value={filterNama} onChange={e=>setFilterNama(e.target.value)} />{!canEditLembaga&&userLembaga&&<span className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded-full"><i className="fas fa-lock mr-1"></i> Filter lembaga dikunci</span>}</div>
+          <div className="bg-white rounded-2xl shadow-sm border overflow-hidden"><div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead className="bg-blue-700 text-white border-b"><tr><th className="px-4 py-4">Nama Pegawai</th><th className="px-4 py-4">Jenis Ijin</th><th className="px-4 py-4">Tanggal Awal</th><th className="px-4 py-4">Tanggal Akhir</th><th className="px-4 py-4 text-center">File</th><th className="px-4 py-4">Status</th><th className="px-4 py-4">Keterangan</th>{canEditData&&<th className="px-4 py-4 text-center">Aksi</th>}</tr></thead><tbody className="divide-y text-slate-700">{paginatedData.map((item,i)=>(<tr key={i} className="hover:bg-slate-50 transition-colors"><td className="px-4 py-3"><div className="font-bold">{item['Nama Pegawai']}</div><div className="text-[10px] text-slate-500">{item['Nama Lembaga']}</div></td><td className="px-4 py-3 font-medium text-blue-600">{item['Jenis Ijin']}</td><td className="px-4 py-3">{item['Tanggal Awal']||'-'}</td><td className="px-4 py-3">{item['Tanggal Berakir']||'-'}</td><td className="px-4 py-3 text-center"><button onClick={()=>setModalPdf(item['File URL'])} className="bg-red-600 text-white px-3 py-1.5 rounded-lg text-[10px] font-black hover:bg-red-700 transition flex items-center gap-1 mx-auto shadow-sm"><i className="fas fa-file-pdf"></i> PDF</button></td><td className="px-4 py-3">{editRow===item._rowIndex&&canEditData?(<select className="border p-1 rounded w-full text-xs" value={status} onChange={e=>setStatus(e.target.value)}><option value="Diajukan">Diajukan</option><option value="DiSetujui">DiSetujui</option><option value="Ditolak">Ditolak</option></select>):(<span className={`px-2 py-1 rounded text-[10px] font-black uppercase ${item.Status&&item.Status.toLowerCase()==='disetujui'?'bg-green-100 text-green-700 border border-green-200':item.Status&&item.Status.toLowerCase()==='ditolak'?'bg-red-100 text-red-700':'bg-blue-100 text-blue-700 border border-blue-200'}`}>{item.Status||'-'}</span>)}</td><td className="px-4 py-3">{editRow===item._rowIndex&&canEditData?(<input className="border p-1 rounded w-full text-xs" value={ket} onChange={e=>setKet(e.target.value)} placeholder="Tulis catatan..." />):(<span className="text-slate-500 italic">{item.Keterangan||'-'}</span>)}</td>{canEditData&&(<td className="px-4 py-3"><div className="flex gap-2">{editRow===item._rowIndex?(<button onClick={()=>handleSave(item._rowIndex)} className="bg-green-600 text-white w-8 h-8 rounded-lg shadow-md flex items-center justify-center hover:bg-green-700 transition"><i className="fas fa-save"></i></button>):(<><button onClick={()=>{ setEditRow(item._rowIndex); setStatus(item.Status); setKet(item.Keterangan); }} className="text-slate-400 hover:text-blue-600 w-8 h-8 rounded-lg hover:bg-blue-50 transition flex items-center justify-center"><i className="fas fa-edit"></i></button><button onClick={()=>handleDelete(item._rowIndex,item['Nama Pegawai'])} className="text-red-400 hover:text-red-600 w-8 h-8 rounded-lg hover:bg-red-50 transition flex items-center justify-center"><i className="fas fa-trash-alt"></i></button></>)}</div></td>)}</tr>))}{paginatedData.length===0&&(<tr><td colSpan={canEditData?8:7} className="text-center py-10 text-slate-400 font-medium italic">Tidak ada data dokumen ijin</td></tr>)}</tbody></table></div><TablePagination currentPage={currentPage} totalItems={totalItems} rowsPerPage={rowsPerPage} onPageChange={setCurrentPage} onRowsPerPageChange={setRowsPerPage} /></div>
+          {modalPdf&&(<div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={()=>setModalPdf(null)}><div className="w-full max-w-5xl h-[90vh] bg-white rounded-2xl overflow-hidden flex flex-col shadow-2xl" onClick={e=>e.stopPropagation()}><div className="p-4 flex justify-between bg-blue-700 text-white"><span className="font-bold flex items-center gap-2"><i className="fas fa-file-pdf text-red-300"></i>Pratinjau Dokumen</span><button onClick={()=>setModalPdf(null)} className="text-2xl leading-none">&times;</button></div><iframe src={modalPdf.replace('/view','/preview')} className="flex-1 w-full border-none" sandbox="allow-same-origin allow-scripts"></iframe></div></div>)}
+        </div>
+      );
+    };
+
+    // ======================= KOMPONEN DATABASE PEGAWAI =======================
+    const DatabasePegawai = ({ refreshParent, userRole }) => {
+      const [data, setData] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [filterLembaga, setFilterLembaga] = useState('');
+      const [filterNama, setFilterNama] = useState('');
+      const [modalOpen, setModalOpen] = useState(false);
+      const [editingRow, setEditingRow] = useState(null);
+      const [formData, setFormData] = useState({ 'Username (MP/ID)':'','Password':'','Name Lembaga':'','Name Pegawai':'','Latitude':'','Longitude':'','Radius (m)':'','Role':'' });
+      const [currentPage, setCurrentPage] = useState(1);
+      const [rowsPerPage, setRowsPerPage] = useState(10);
+      const canManage = userRole==='Admin'||userRole==='Superuser';
+      const fetchData = async()=>{ setLoading(true); const res=await callAPI('getPegawai'); setData(res||[]); setLoading(false); };
+      useEffect(()=>{ fetchData(); },[]);
+      const filtered = useMemo(()=>data.filter(item=>(item['Name Lembaga']||'').toLowerCase().includes(filterLembaga.toLowerCase()) && (item['Name Pegawai']||'').toLowerCase().includes(filterNama.toLowerCase())),[data,filterLembaga,filterNama]);
+      useEffect(()=>setCurrentPage(1),[filterLembaga,filterNama]);
+      const totalItems = filtered.length;
+      useEffect(()=>{ if(rowsPerPage>totalItems && totalItems>0) setRowsPerPage(totalItems); else if(totalItems===0) setRowsPerPage(10); },[totalItems,rowsPerPage]);
+      const effectiveRowsPerPage = rowsPerPage===totalItems?totalItems:rowsPerPage;
+      const paginatedData = filtered.slice((currentPage-1)*effectiveRowsPerPage, currentPage*effectiveRowsPerPage);
+      const openModal=(item=null)=>{ if(!canManage){ Swal.fire('Akses Ditolak','Hanya Admin dan Superuser yang dapat menambah/mengedit data pegawai.','warning'); return; } if(item){ setFormData({ 'Username (MP/ID)':item['Username (MP/ID)']||'', 'Password':item['Password']||'', 'Name Lembaga':item['Name Lembaga']||'', 'Name Pegawai':item['Name Pegawai']||'', 'Latitude':item['Latitude']||'', 'Longitude':item['Longitude']||'', 'Radius (m)':item['Radius (m)']||'', 'Role':item['Role']||'' }); setEditingRow(item._rowIndex); }else{ setFormData({ 'Username (MP/ID)':'','Password':'','Name Lembaga':'','Name Pegawai':'','Latitude':'','Longitude':'','Radius (m)':'','Role':'' }); setEditingRow(null); } setModalOpen(true); };
+      const handleInputChange=(e)=>setFormData({...formData,[e.target.name]:e.target.value});
+      const handleSubmit=async()=>{ if(!formData['Username (MP/ID)']||!formData['Password']||!formData['Name Pegawai']){ Swal.fire('Peringatan','Username, Password, dan Nama Pegawai harus diisi','warning'); return; } setLoading(true); let res; if(editingRow) res=await callAPI('updatePegawai',editingRow,formData); else res=await callAPI('addPegawai',formData); if(res.success){ Swal.fire({icon:'success',title:'Berhasil',timer:1500,showConfirmButton:false}); setModalOpen(false); fetchData(); if(refreshParent) refreshParent(); }else{ Swal.fire('Error','Gagal menyimpan data','error'); } setLoading(false); };
+      const handleDelete=async(rowIndex,nama)=>{ if(!canManage){ Swal.fire('Akses Ditolak','Hanya Admin dan Superuser yang dapat menghapus data pegawai.','warning'); return; } const confirm=await Swal.fire({title:'Hapus Pegawai?',text:`Yakin ingin menghapus ${nama}?`,icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',cancelButtonColor:'#334155',confirmButtonText:'Ya, Hapus'}); if(confirm.isConfirmed){ setLoading(true); const res=await callAPI('deletePegawai',rowIndex); if(res.success){ Swal.fire('Terhapus','Data pegawai berhasil dihapus','success'); fetchData(); }else{ Swal.fire('Error','Gagal menghapus','error'); } setLoading(false); } };
+      return (
+        <div className="space-y-6">
+          <div className="bg-white p-5 rounded-2xl shadow-sm border flex flex-wrap justify-between items-center"><h3 className="font-bold text-xl text-slate-800 flex items-center gap-2"><i className="fas fa-database text-blue-600"></i> Database Pegawai</h3>{canManage?(<button onClick={()=>openModal()} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-3 rounded-xl font-bold shadow-lg flex items-center gap-2 transition"><i className="fas fa-plus-circle"></i> Tambah Pegawai</button>):(<div className="text-sm text-red-600 font-semibold bg-red-50 px-4 py-2 rounded-xl border border-red-200"><i className="fas fa-lock mr-2"></i>Hanya Admin/Superuser dapat mengelola data</div>)}</div>
+          <div className="bg-white p-5 rounded-2xl shadow-sm border flex flex-wrap gap-4 items-center"><h4 className="font-bold text-slate-700 mr-2">Filter:</h4><input type="text" placeholder="Cari Lembaga..." className="border p-3 rounded-xl flex-1 text-sm outline-none focus:border-blue-500" value={filterLembaga} onChange={e=>setFilterLembaga(e.target.value)} /><input type="text" placeholder="Cari Nama Pegawai..." className="border p-3 rounded-xl flex-1 text-sm outline-none focus:border-blue-500" value={filterNama} onChange={e=>setFilterNama(e.target.value)} /></div>
+          <div className="bg-white rounded-2xl shadow-sm border overflow-hidden"><div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead className="bg-blue-700 text-white border-b"><tr><th className="px-4 py-4">Username (MP/ID)</th><th className="px-4 py-4">Password</th><th className="px-4 py-4">Lembaga</th><th className="px-4 py-4">Nama Pegawai</th><th className="px-4 py-4">Latitude</th><th className="px-4 py-4">Longitude</th><th className="px-4 py-4">Radius (m)</th><th className="px-4 py-4">Role</th>{canManage&&<th className="px-4 py-4 text-center">Aksi</th>}</tr></thead><tbody className="divide-y">{paginatedData.map((item,i)=>(<tr key={i} className="hover:bg-slate-50 transition-colors"><td className="px-4 py-3 font-medium">{item['Username (MP/ID)']}</td><td className="px-4 py-3">••••••</td><td className="px-4 py-3">{item['Name Lembaga']}</td><td className="px-4 py-3 font-bold">{item['Name Pegawai']}</td><td className="px-4 py-3">{item['Latitude']}</td><td className="px-4 py-3">{item['Longitude']}</td><td className="px-4 py-3">{item['Radius (m)']}</td><td className="px-4 py-3"><span className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-[10px] font-black uppercase">{item['Role']}</span></td>{canManage&&(<td className="px-4 py-3"><div className="flex justify-center gap-2"><button onClick={()=>openModal(item)} className="text-blue-600 hover:bg-blue-50 w-8 h-8 rounded-lg flex items-center justify-center transition"><i className="fas fa-edit"></i></button><button onClick={()=>handleDelete(item._rowIndex,item['Name Pegawai'])} className="text-red-600 hover:bg-red-50 w-8 h-8 rounded-lg flex items-center justify-center transition"><i className="fas fa-trash-alt"></i></button></div></td>)}</tr>))}{paginatedData.length===0&&(<tr><td colSpan={canManage?9:8} className="text-center py-10 text-slate-400 font-medium italic">Tidak ada data pegawai</td></tr>)}</tbody></table></div><TablePagination currentPage={currentPage} totalItems={totalItems} rowsPerPage={rowsPerPage} onPageChange={setCurrentPage} onRowsPerPageChange={setRowsPerPage} /></div>
+          {modalOpen&&canManage&&(<div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={()=>setModalOpen(false)}><div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto" onClick={e=>e.stopPropagation()}><div className="p-6 border-b flex justify-between items-center bg-blue-700 text-white sticky top-0"><h4 className="text-xl font-bold flex items-center gap-2"><i className={`fas ${editingRow?'fa-edit':'fa-user-plus'} text-blue-200`}></i>{editingRow?'Edit Pegawai':'Tambah Pegawai Baru'}</h4><button onClick={()=>setModalOpen(false)} className="text-3xl leading-none hover:text-slate-300">&times;</button></div><div className="p-6 space-y-4"><div className="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Username (MP/ID) *</label><input type="text" name="Username (MP/ID)" value={formData['Username (MP/ID)']} onChange={handleInputChange} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" required /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Password *</label><input type="text" name="Password" value={formData['Password']} onChange={handleInputChange} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" required /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Nama Lembaga</label><select name="Name Lembaga" value={formData['Name Lembaga']} onChange={handleInputChange} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Pilih Lembaga</option>{lembagaList.map(lem=><option key={lem} value={lem}>{lem}</option>)}</select></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Nama Pegawai *</label><input type="text" name="Name Pegawai" value={formData['Name Pegawai']} onChange={handleInputChange} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" required /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Latitude</label><input type="text" name="Latitude" value={formData['Latitude']} onChange={handleInputChange} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Longitude</label><input type="text" name="Longitude" value={formData['Longitude']} onChange={handleInputChange} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Radius (m)</label><input type="text" name="Radius (m)" value={formData['Radius (m)']} onChange={handleInputChange} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div><div><label className="block text-xs font-bold uppercase text-slate-500 mb-1">Role</label><select name="Role" value={formData['Role']} onChange={handleInputChange} className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"><option value="">Pilih Role</option><option value="Admin">Admin</option><option value="Superuser">Superuser</option><option value="User">User</option><option value="Supervisor">Supervisor</option></select></div></div><div className="flex justify-end gap-3 pt-4 border-t"><button onClick={()=>setModalOpen(false)} className="px-6 py-3 border-2 border-slate-300 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition">Batal</button><button onClick={handleSubmit} disabled={loading} className="px-6 py-3 bg-blue-600 text-white rounded-xl font-bold shadow-lg hover:bg-blue-700 transition flex items-center gap-2 disabled:opacity-50">{loading?'Menyimpan...':<><i className="fas fa-save"></i> Simpan</>}</button></div></div></div></div>)}
+        </div>
+      );
+    };
+
+    // ======================= KOMPONEN MONITORING & EXPORT =======================
+    const MonitoringExport = ({ presensiData, ijinData, pegawaiData, refreshData, userRole }) => {
+      const [filterLembaga, setFilterLembaga] = useState('');
+      const [dateStart, setDateStart] = useState('');
+      const [dateEnd, setDateEnd] = useState('');
+      const isAdmin = userRole === 'Admin';
+      const canExport = userRole === 'Admin' || userRole === 'User' || userRole === 'Superuser';
+      const setThisMonth = () => { const now = new Date(); const firstDay = new Date(now.getFullYear(), now.getMonth(), 1); const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0); setDateStart(firstDay.toISOString().split('T')[0]); setDateEnd(lastDay.toISOString().split('T')[0]); };
+      const clearDateFilter = () => { setDateStart(''); setDateEnd(''); };
+
+      const getFilteredData = (lembagaFilter = null) => {
+        let filtered = [...presensiData];
+        const targetLembaga = lembagaFilter !== null ? lembagaFilter : filterLembaga;
+        if (targetLembaga) filtered = filtered.filter(i => (i['Nama Lembaga'] || '') === targetLembaga);
+        if (dateStart && dateEnd) {
+          const startNum = dateToNumber(parseIjinDate(dateStart));
+          const endNum = dateToNumber(parseIjinDate(dateEnd));
+          if (startNum && endNum) filtered = filtered.filter(item => { const presensiDate = parsePresensiDate(item['Waktu']); return isDateInRangeNum(presensiDate, startNum, endNum); });
+        } else if (dateStart) {
+          const startNum = dateToNumber(parseIjinDate(dateStart));
+          if (startNum) filtered = filtered.filter(item => { const presensiDate = parsePresensiDate(item['Waktu']); const dnum = dateToNumber(presensiDate); return dnum >= startNum; });
+        } else if (dateEnd) {
+          const endNum = dateToNumber(parseIjinDate(dateEnd));
+          if (endNum) filtered = filtered.filter(item => { const presensiDate = parsePresensiDate(item['Waktu']); const dnum = dateToNumber(presensiDate); return dnum <= endNum; });
+        }
+        return filtered;
+      };
+
+      const getEmployeesByLembaga = (lembaga) => {
+        if (!pegawaiData) return [];
+        return pegawaiData.filter(p => (p['Name Lembaga'] || '') === lembaga);
+      };
+
+      const extractTime = (waktuStr) => {
+        if (!waktuStr) return null;
+        const match = waktuStr.match(/pukul\s*([\d\.\:]+)/i);
+        return match ? match[1] : null;
+      };
+
+      const isPSWActive = (employeeName, dateStr) => {
+        if (!ijinData) return false;
+        const approvedIjin = ijinData.filter(ij => ij.Status && ij.Status.toLowerCase() === 'disetujui');
+        const normalizedEmployee = normalizeName(employeeName);
+        return approvedIjin.some(ij => {
+          const normalizedIjin = normalizeName(ij['Nama Pegawai'] || '');
+          if (normalizedEmployee !== normalizedIjin) return false;
+          const start = parseIjinDate(ij['Tanggal Awal']);
+          const end = parseIjinDate(ij['Tanggal Berakir']);
+          if (!start || !end) return false;
+          return isDateInRange(dateStr, start, end);
+        });
+      };
+
+      const getPSWJenis = (employeeName, dateStr) => {
+        if (!ijinData) return null;
+        const approvedIjin = ijinData.filter(ij => ij.Status && ij.Status.toLowerCase() === 'disetujui');
+        const normalizedEmployee = normalizeName(employeeName);
+        const match = approvedIjin.find(ij => {
+          const normalizedIjin = normalizeName(ij['Nama Pegawai'] || '');
+          if (normalizedEmployee !== normalizedIjin) return false;
+          const start = parseIjinDate(ij['Tanggal Awal']);
+          const end = parseIjinDate(ij['Tanggal Berakir']);
+          if (!start || !end) return false;
+          return isDateInRange(dateStr, start, end);
+        });
+        return match ? match['Jenis Ijin'] : null;
+      };
+
+      const exportDaftarHadirRingkas = () => {
+        if (!dateStart || !dateEnd) {
+          Swal.fire('Periode Tanggal Belum Dipilih', 'Silakan pilih rentang tanggal terlebih dahulu untuk mengekspor Daftar Hadir Ringkas.', 'warning');
+          return;
+        }
+        try {
+          const { jsPDF } = window.jspdf;
+          const doc = new jsPDF('l', 'mm', 'a4');
+          const startDateObj = new Date(dateStart);
+          const endDateObj = new Date(dateEnd);
+          const allDates = [];
+          let currentDate = new Date(startDateObj);
+          while (currentDate <= endDateObj) {
+            const yyyy = currentDate.getFullYear();
+            const mm = String(currentDate.getMonth() + 1).padStart(2, '0');
+            const dd = String(currentDate.getDate()).padStart(2, '0');
+            const dateStr = `${dd}/${mm}/${yyyy}`;
+            const dayName = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'][currentDate.getDay()];
+            allDates.push({ dateStr, dayName: dayName.substring(0,3), dayNumber: parseInt(dd,10), fullDate: new Date(currentDate) });
+            currentDate.setDate(currentDate.getDate() + 1);
+          }
+          if (allDates.length === 0) return;
+          const ranges = [
+            { name: 'Tanggal 1-10', minDay: 1, maxDay: 10 },
+            { name: 'Tanggal 11-20', minDay: 11, maxDay: 20 },
+            { name: 'Tanggal 21-31', minDay: 21, maxDay: 31 }
+          ];
+          const dateGroups = ranges.map(range => ({ ...range, dates: allDates.filter(d => d.dayNumber >= range.minDay && d.dayNumber <= range.maxDay) })).filter(group => group.dates.length > 0);
+          
+          const globalPresensi = getFilteredData(null);
+          const globalPresensiMap = new Map();
+          globalPresensi.forEach(p => {
+            const date = parsePresensiDate(p['Waktu']);
+            if (!date) return;
+            const normName = normalizeName(p['Nama Pegawai'] || '');
+            const key = `${normName}|${date}`;
+            if (!globalPresensiMap.has(key)) globalPresensiMap.set(key, { datang: null, pulang: null });
+            const entry = globalPresensiMap.get(key);
+            const jenis = (p['Jenis Presensi'] || '').toLowerCase();
+            const time = extractTime(p['Waktu']);
+            const radius = p.displayRadius || p['Keterangan Radius'] || '';
+            const isLibur = radius.toLowerCase().includes('libur') || radius.toLowerCase().includes('cuti bersama');
+            const late = (jenis === 'datang') ? checkLateStatus(p['Waktu'], 'datang') : false;
+            const recordData = { time, radius, isLibur, late };
+            if (jenis === 'datang') {
+              entry.datang = recordData;
+            } else if (jenis === 'pulang') {
+              entry.pulang = recordData;
+            }
+          });
+          
+          const isTHByRecord = (typeRecord) => {
+            if (!typeRecord) return true;
+            if (typeRecord.radius && isTidakHadir(typeRecord.radius)) return true;
+            return false;
+          };
+          
+          const lembagasToExport = filterLembaga ? [filterLembaga] : [...lembagaList];
+          let firstLembaga = true;
+          for (let lem of lembagasToExport) {
+            const employees = getEmployeesByLembaga(lem);
+            if (employees.length === 0) continue;
+            const employeeDetails = employees.map(emp => ({ nama: emp['Name Pegawai'] || '', username: emp['Username (MP/ID)'] || '-' })).sort((a,b) => a.nama.localeCompare(b.nama));
+            
+            const getCellValue = (empName, dateStr, type) => {
+              const [dd, mm, yyyy] = dateStr.split('/');
+              const dateObj = new Date(parseInt(yyyy), parseInt(mm)-1, parseInt(dd));
+              if (dateObj.getDay() === 0 || dateObj.getDay() === 6) return { text: 'LIBUR', style: 'libur', late: false };
+              const normName = normalizeName(empName);
+              const key = `${normName}|${dateStr}`;
+              const presEntry = globalPresensiMap.get(key);
+              const pswActive = isPSWActive(empName, dateStr);
+              if (pswActive) {
+                const jenis = getPSWJenis(empName, dateStr);
+                return { text: `PSW${jenis ? ` (${jenis})` : ''}`, style: 'psw', late: false };
+              }
+              let hasLibur = false;
+              if (presEntry) {
+                if ((presEntry.datang && presEntry.datang.isLibur) || (presEntry.pulang && presEntry.pulang.isLibur)) hasLibur = true;
+              }
+              if (hasLibur) return { text: 'LIBUR', style: 'libur', late: false };
+              
+              let record = null;
+              if (type === 'D') record = presEntry ? presEntry.datang : null;
+              else record = presEntry ? presEntry.pulang : null;
+              
+              if (isTHByRecord(record)) return { text: 'TH', style: 'th', late: false };
+              if (record && record.time) return { text: record.time, style: record.late ? 'late' : 'normal', late: record.late };
+              return { text: 'TH', style: 'th', late: false };
+            };
+            
+            const buildTableForGroup = (group, startY) => {
+              const { dates, name } = group;
+              const headerRow1 = [
+                { content: 'NO', rowSpan: 2, styles: { halign: 'center', valign: 'middle' } },
+                { content: 'NAMA PEGAWAI\n(NIP/NUPTK)', rowSpan: 2, styles: { halign: 'center', valign: 'middle', fontSize: 7 } }
+              ];
+              dates.forEach(d => { headerRow1.push({ content: `${d.dayNumber}\n${d.dayName}`, colSpan: 2, styles: { halign: 'center', valign: 'middle', fontSize: 7 } }); });
+              const headerRow2 = [{ content: '', colSpan: 2, styles: { fillColor: [30,64,175] } }];
+              dates.forEach(() => { headerRow2.push({ content: 'D', styles: { halign: 'center' } }); headerRow2.push({ content: 'P', styles: { halign: 'center' } }); });
+              const bodyRows = [];
+              employeeDetails.forEach((emp, idx) => {
+                const rowCells = [
+                  { content: idx+1, styles: { halign: 'center' } },
+                  { content: `${emp.nama}\n${emp.username}`, styles: { fontSize: 6 } }
+                ];
+                dates.forEach(d => {
+                  const datang = getCellValue(emp.nama, d.dateStr, 'D');
+                  const pulang = getCellValue(emp.nama, d.dateStr, 'P');
+                  const cellD = { content: datang.text, styles: { fontSize: 6, halign: 'center' } };
+                  const cellP = { content: pulang.text, styles: { fontSize: 6, halign: 'center' } };
+                  if (datang.style === 'th') { cellD.styles.textColor = [255,0,0]; cellD.styles.fontStyle = 'bold'; }
+                  if (pulang.style === 'th') { cellP.styles.textColor = [255,0,0]; cellP.styles.fontStyle = 'bold'; }
+                  if (datang.style === 'late') { cellD.styles.fillColor = [254,249,195]; cellD.styles.textColor = [0,0,0]; }
+                  if (pulang.style === 'late') { cellP.styles.fillColor = [254,249,195]; cellP.styles.textColor = [0,0,0]; }
+                  if (datang.style === 'psw') cellD.styles.fillColor = [209,250,229];
+                  if (pulang.style === 'psw') cellP.styles.fillColor = [209,250,229];
+                  if (datang.style === 'libur') cellD.styles.fillColor = [255,204,204];
+                  if (pulang.style === 'libur') cellP.styles.fillColor = [255,204,204];
+                  rowCells.push(cellD, cellP);
+                });
+                bodyRows.push(rowCells);
+              });
+              doc.autoTable({
+                head: [headerRow1, headerRow2],
+                body: bodyRows,
+                theme: 'grid',
+                startY: startY,
+                headStyles: { fillColor: [30,64,175], textColor: 255, fontStyle: 'bold', fontSize: 7 },
+                bodyStyles: { fontSize: 6 },
+                columnStyles: { 0: { cellWidth: 8 }, 1: { cellWidth: 45 } },
+                margin: { left: 10, right: 10 },
+                didDrawPage: (data) => {
+                  doc.setFontSize(7);
+                  doc.setTextColor(100);
+                  doc.text(`Hal ${data.pageNumber}`, doc.internal.pageSize.getWidth() - 20, doc.internal.pageSize.getHeight() - 10);
+                }
+              });
+              return doc.lastAutoTable.finalY + 6;
+            };
+            const bulanNama = startDateObj.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+            if (!firstLembaga) doc.addPage();
+            else firstLembaga = false;
+            doc.setFontSize(12); doc.setTextColor(30,41,59); doc.setFont(undefined, 'bold');
+            doc.text("DAFTAR HADIR PEGAWAI BULANAN", 14, 15);
+            doc.setFontSize(8); doc.setTextColor(80);
+            doc.text(`BULAN: ${bulanNama}`, 14, 22);
+            doc.text(`UNIT KERJA: ${lem}`, 14, 28);
+            doc.text(`Dicetak: ${new Date().toLocaleString('id-ID')}`, 14, 40);
+            let currentY = 46;
+            for (let i=0; i<dateGroups.length; i++) {
+              if (i>0) doc.addPage();
+              const yStart = (i===0) ? currentY : 20;
+              doc.setFontSize(9); doc.setTextColor(0,51,102); doc.setFont(undefined, 'bold');
+              doc.text(dateGroups[i].name, 14, yStart);
+              currentY = buildTableForGroup(dateGroups[i], yStart + 6);
+            }
+            for (let i=1; i<=doc.internal.getNumberOfPages(); i++) {
+              doc.setPage(i);
+              doc.setFontSize(6); doc.setTextColor(100);
+              doc.text("(CATATAN: Daftar Presensi. Keterangan TH: Tidak Hadir / Alpa, Latar Kuning = Terlambat >07:00)", 14, doc.internal.pageSize.getHeight() - 8);
+              doc.text("KETERANGAN: D (Datang), P (Pulang), TH (Tidak Hadir)", doc.internal.pageSize.getWidth() - 80, doc.internal.pageSize.getHeight() - 8);
+            }
+          }
+          const now = new Date();
+          const tanggal = now.toISOString().slice(0,10);
+          const waktu = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(/\./g, '-');
+          const lembagaForFilename = filterLembaga ? filterLembaga.replace(/\s/g, '_') : "Semua_Lembaga";
+          doc.save(`${lembagaForFilename}_Daftar_Hadir_${tanggal}_${waktu}.pdf`);
+        } catch (err) { console.error(err); Swal.fire('Error Ekspor', 'Terjadi kesalahan saat membuat PDF. Periksa konsol.', 'error'); }
+      };
+
+      const generateLaporanPDF = () => {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF('l', 'mm', 'a4');
+        let filteredData = getFilteredData();
+        const isAllLembaga = !filterLembaga;
+        doc.setFontSize(18); doc.setTextColor(30,41,59); doc.text("Laporan Monitoring Presensi Korwil Sine", 14, 15);
+        doc.setFontSize(10); doc.setTextColor(100); doc.text(`Dicetak pada: ${new Date().toLocaleString('id-ID')}`, 14, 22);
+        let yOffset = 28;
+        if (filterLembaga) doc.text(`Filter Lembaga: ${filterLembaga}`, 14, yOffset);
+        else doc.text(`Filter Lembaga: Semua Lembaga (terstruktur per lembaga)`, 14, yOffset);
+        yOffset += 5;
+        if (dateStart && dateEnd) doc.text(`Filter Tanggal: ${parseIjinDate(dateStart)} - ${parseIjinDate(dateEnd)}`, 14, yOffset);
+        else if (dateStart) doc.text(`Filter Tanggal: mulai ${parseIjinDate(dateStart)}`, 14, yOffset);
+        else if (dateEnd) doc.text(`Filter Tanggal: sampai ${parseIjinDate(dateEnd)}`, 14, yOffset);
+        yOffset += 8;
+        if (isAllLembaga) {
+          const grouped = new Map();
+          filteredData.forEach(item => { const lem = item['Nama Lembaga'] || 'Tidak Diketahui'; if (!grouped.has(lem)) grouped.set(lem, []); grouped.get(lem).push(item); });
+          const sortedLembagas = Array.from(grouped.keys()).sort();
+          let currentY = yOffset;
+          sortedLembagas.forEach((lembaga, idx) => {
+            const rows = grouped.get(lembaga);
+            if (rows.length === 0) return;
+            doc.setFontSize(12); doc.setTextColor(0,51,102); doc.text(`${idx+1}. ${lembaga}`, 14, currentY);
+            currentY += 6;
+            const tableData = rows.map(item => [item.Waktu, item['Nama Pegawai'], item['Jenis Presensi'], item.displayRadius || item['Keterangan Radius'], item['Keterangan Bukti'] || '-']);
+            doc.autoTable({ startY: currentY, head: [['Waktu', 'Nama Pegawai', 'Jenis', 'Status Radius', 'Keterangan']], body: tableData, theme: 'grid', headStyles: { fillColor: [30,64,175], textColor: [255,255,255], fontStyle: 'bold' }, margin: { left: 14 }, columnStyles: { 0: { cellWidth: 50 } }, didParseCell: (data) => { const rowItem = rows[data.row.index]; if (rowItem && data.section === 'body') { const outRadius = isOutsideRadius(rowItem.displayRadius); const late = checkLateStatus(rowItem['Waktu'], rowItem['Jenis Presensi']); const tidakHadir = isTidakHadir(rowItem.displayRadius); const isPSW = rowItem.isPSW; if (isPSW) { data.cell.styles.fillColor = [209,250,229]; data.cell.styles.textColor = [6,78,59]; } else if (tidakHadir) { data.cell.styles.fillColor = [0,0,0]; data.cell.styles.textColor = [255,255,255]; } else if (outRadius) { data.cell.styles.fillColor = [254,226,226]; data.cell.styles.textColor = [153,27,27]; } else if (late) { data.cell.styles.fillColor = [254,249,195]; data.cell.styles.textColor = [133,77,14]; } } }, didDrawPage: (data) => { const pn = data.pageNumber; doc.setFontSize(8); doc.setTextColor(100); doc.text(`Hal ${pn}`, doc.internal.pageSize.getWidth() - 20, doc.internal.pageSize.getHeight() - 10); } });
+            currentY = doc.lastAutoTable.finalY + 8;
+          });
+        } else {
+          const tableData = filteredData.map(item => [item.Waktu, item['Nama Pegawai'], item['Jenis Presensi'], item.displayRadius || item['Keterangan Radius'], item['Keterangan Bukti'] || '-']);
+          doc.autoTable({ startY: yOffset, head: [['Waktu', 'Nama Pegawai', 'Jenis', 'Status Radius', 'Keterangan']], body: tableData, theme: 'grid', headStyles: { fillColor: [30,64,175], textColor: [255,255,255], fontStyle: 'bold' }, columnStyles: { 0: { cellWidth: 50 } }, didParseCell: (data) => { const rowItem = filteredData[data.row.index]; if (rowItem && data.section === 'body') { const outRadius = isOutsideRadius(rowItem.displayRadius); const late = checkLateStatus(rowItem['Waktu'], rowItem['Jenis Presensi']); const tidakHadir = isTidakHadir(rowItem.displayRadius); const isPSW = rowItem.isPSW; if (isPSW) { data.cell.styles.fillColor = [209,250,229]; data.cell.styles.textColor = [6,78,59]; } else if (tidakHadir) { data.cell.styles.fillColor = [0,0,0]; data.cell.styles.textColor = [255,255,255]; } else if (outRadius) { data.cell.styles.fillColor = [254,226,226]; data.cell.styles.textColor = [153,27,27]; } else if (late) { data.cell.styles.fillColor = [254,249,195]; data.cell.styles.textColor = [133,77,14]; } } }, didDrawPage: (data) => { const pn = data.pageNumber; doc.setFontSize(8); doc.setTextColor(100); doc.text(`Hal ${pn}`, doc.internal.pageSize.getWidth() - 20, doc.internal.pageSize.getHeight() - 10); } });
+        }
+        const now = new Date();
+        const tanggal = now.toISOString().slice(0,10);
+        const waktu = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(/\./g, '-');
+        const lembagaForFilename = filterLembaga ? filterLembaga.replace(/\s/g, '_') : "Semua_Lembaga";
+        doc.save(`Laporan_Presensi_${lembagaForFilename}_${tanggal}_${waktu}.pdf`);
+      };
+
+      const exportRekapitulasiPDF = () => {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF('l', 'mm', 'a4');
+        let targetLembagas = filterLembaga ? [filterLembaga] : [...lembagaList];
+        let approvedIjin = (ijinData || []).filter(ij => ij.Status && ij.Status.toLowerCase() === 'disetujui');
+        if (dateStart && dateEnd) { const startDateObj = new Date(dateStart); const endDateObj = new Date(dateEnd); approvedIjin = approvedIjin.filter(ij => { const tglAwal = new Date(ij['Tanggal Awal']); const tglAkhir = new Date(ij['Tanggal Berakir']); return tglAwal <= endDateObj && tglAkhir >= startDateObj; }); } else if (dateStart) { const startDateObj = new Date(dateStart); approvedIjin = approvedIjin.filter(ij => new Date(ij['Tanggal Berakir']) >= startDateObj); } else if (dateEnd) { const endDateObj = new Date(dateEnd); approvedIjin = approvedIjin.filter(ij => new Date(ij['Tanggal Awal']) <= endDateObj); }
+        const rekaps = [];
+        for (let lem of targetLembagas) {
+          const presensiLembaga = getFilteredData(lem);
+          const pegawaiCount = (pegawaiData || []).filter(pg => (pg['Name Lembaga'] || '') === lem).length;
+          const jumlahDatang = presensiLembaga.filter(p => (p['Jenis Presensi'] || '').toLowerCase() === 'datang').length;
+          const jumlahPulang = presensiLembaga.filter(p => (p['Jenis Presensi'] || '').toLowerCase() === 'pulang').length;
+          const jumlahTidakHadir = presensiLembaga.filter(p => isTidakHadir(p.displayRadius)).length;
+          const jumlahTerlambat = presensiLembaga.filter(p => (p['Jenis Presensi'] || '').toLowerCase() === 'datang' && checkLateStatus(p['Waktu'], 'datang')).length;
+          const ijinLembaga = approvedIjin.filter(ij => (ij['Nama Lembaga'] || '') === lem);
+          const jumlahIjin = ijinLembaga.filter(ij => (ij['Jenis Ijin'] || '') === 'Ijin').length;
+          const jumlahSakit = ijinLembaga.filter(ij => (ij['Jenis Ijin'] || '') === 'Sakit').length;
+          const jumlahDinasLuar = ijinLembaga.filter(ij => (ij['Jenis Ijin'] || '') === 'Dinas Luar').length;
+          rekaps.push({ lem, pegawaiCount, jumlahDatang, jumlahPulang, jumlahTidakHadir, jumlahTerlambat, jumlahIjin, jumlahSakit, jumlahDinasLuar });
+        }
+        doc.setFontSize(16); doc.setTextColor(30,41,59); doc.text("REKAPITULASI PRESENSI PER LEMBAGA", 14, 15);
+        doc.setFontSize(10); doc.setTextColor(100); doc.text(`Dicetak: ${new Date().toLocaleString('id-ID')}`, 14, 22);
+        let filterDesc = filterLembaga ? `Lembaga: ${filterLembaga}` : "Semua Lembaga";
+        if (dateStart && dateEnd) filterDesc += ` | Periode: ${parseIjinDate(dateStart)} s.d ${parseIjinDate(dateEnd)}`;
+        else if (dateStart) filterDesc += ` | Mulai: ${parseIjinDate(dateStart)}`;
+        else if (dateEnd) filterDesc += ` | Sampai: ${parseIjinDate(dateEnd)}`;
+        doc.text(filterDesc, 14, 29);
+        const tableData = rekaps.map((r, idx) => [idx+1, r.lem, r.pegawaiCount, r.jumlahDatang, r.jumlahPulang, r.jumlahTidakHadir, r.jumlahTerlambat, r.jumlahIjin, r.jumlahSakit, r.jumlahDinasLuar]);
+        doc.autoTable({ startY: 36, head: [['No','Nama Lembaga','Jml Pegawai','Jml Datang','Jml Pulang','Jml Tidak Hadir','Jml Terlambat','Jml Ijin','Jml Sakit','Jml Dinas Luar']], body: tableData, theme: 'striped', headStyles: { fillColor: [30,64,175], textColor: 255, fontStyle: 'bold' }, foot: [['','TOTAL', rekaps.reduce((s,r)=>s+r.pegawaiCount,0), rekaps.reduce((s,r)=>s+r.jumlahDatang,0), rekaps.reduce((s,r)=>s+r.jumlahPulang,0), rekaps.reduce((s,r)=>s+r.jumlahTidakHadir,0), rekaps.reduce((s,r)=>s+r.jumlahTerlambat,0), rekaps.reduce((s,r)=>s+r.jumlahIjin,0), rekaps.reduce((s,r)=>s+r.jumlahSakit,0), rekaps.reduce((s,r)=>s+r.jumlahDinasLuar,0)]], footStyles: { fillColor: [240,240,240], textColor: 0, fontStyle: 'bold' } });
+        const now = new Date();
+        const tanggal = now.toISOString().slice(0,10);
+        const waktu = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(/\./g, '-');
+        const lembagaForFilename = filterLembaga ? filterLembaga.replace(/\s/g, '_') : "Semua_Lembaga";
+        doc.save(`Rekapitulasi_${lembagaForFilename}_${tanggal}_${waktu}.pdf`);
+      };
+
+      const handleReset = async () => {
+        const resConfirm = await Swal.fire({ title: 'RESET SEMUA DATA?', text: 'Data yang terhapus tidak dapat dikembalikan. Pastikan Anda sudah mengunduh PDF Laporan!', icon: 'warning', showCancelButton: true, confirmButtonColor: '#d33', cancelButtonColor: '#334155', confirmButtonText: 'Ya, Bersihkan Data' });
+        if (resConfirm.isConfirmed) { Swal.fire({ title: 'Menghapus...', allowOutsideClick: false, didOpen: () => Swal.showLoading() }); const res = await callAPI('resetDataPresensi'); if (res.success) { Swal.fire('Terhapus', 'Database presensi telah dikosongkan.', 'success'); refreshData(); } }
+      };
+
+      return (
+        <div className="bg-white p-8 rounded-2xl shadow-sm border space-y-8">
+          <div className="border-b pb-6"><h3 className="text-2xl font-black text-slate-800 flex items-center gap-2"><i className="fas fa-chart-line text-blue-600"></i> Monitoring & Ekspor Data</h3><p className="text-slate-500 text-sm">Filter data terlebih dahulu, lalu pilih jenis laporan yang ingin diekspor.</p></div>
+          <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200"><h4 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><i className="fas fa-sliders-h text-indigo-500"></i> Filter Data Ekspor</h4><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Pilih Lembaga</label><select className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" value={filterLembaga} onChange={e=>setFilterLembaga(e.target.value)}><option value="">Semua Lembaga</option>{lembagaList.map(lem=><option key={lem} value={lem}>{lem}</option>)}</select></div><div><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Rentang Tanggal</label><div className="flex flex-wrap gap-3"><input type="date" className="flex-1 border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" value={dateStart} onChange={e=>setDateStart(e.target.value)} /><span className="self-center">s.d.</span><input type="date" className="flex-1 border p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" value={dateEnd} onChange={e=>setDateEnd(e.target.value)} /></div><div className="flex gap-2 mt-2"><button onClick={setThisMonth} className="text-xs bg-blue-100 text-blue-700 px-3 py-1 rounded-full hover:bg-blue-200">Bulan Ini</button>{(dateStart||dateEnd)&&<button onClick={clearDateFilter} className="text-xs bg-gray-200 text-gray-700 px-3 py-1 rounded-full hover:bg-gray-300">Hapus Filter</button>}</div></div></div><div className="text-xs text-slate-500 mt-3 italic"><i className="fas fa-info-circle mr-1"></i> Filter ini berlaku untuk semua jenis ekspor: Laporan Detail, Rekapitulasi, dan Daftar Hadir Ringkas.</div></div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            {canExport ? (
+              <>
+                <div className="bg-blue-50 p-6 rounded-2xl border border-blue-200"><h4 className="font-bold text-blue-800 mb-4 flex items-center gap-2"><i className="fas fa-print text-emerald-600"></i> Ekspor Laporan PDF (Detail)</h4><p className="text-sm text-blue-700 mb-4">Mencetak seluruh data presensi sesuai filter. Jika memilih "Semua Lembaga", data akan dikelompokkan per lembaga secara terstruktur.</p><button onClick={generateLaporanPDF} className="w-full bg-blue-700 hover:bg-blue-800 text-white py-4 rounded-xl font-black shadow-lg flex items-center justify-center gap-3"><i className="fas fa-file-pdf text-red-300"></i> UNDUH LAPORAN PDF</button></div>
+                <div className="bg-indigo-50 p-6 rounded-2xl border border-indigo-200"><h4 className="font-bold text-indigo-800 mb-4 flex items-center gap-2"><i className="fas fa-chart-simple text-indigo-600"></i> Export Rekapitulasi</h4><p className="text-sm text-indigo-700 mb-4">Ekspor ringkasan per lembaga: jumlah pegawai, datang, pulang, tidak hadir, terlambat, ijin, sakit, dinas luar berdasarkan filter yang dipilih.</p><button onClick={exportRekapitulasiPDF} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-4 rounded-xl font-black shadow-lg flex items-center justify-center gap-3"><i className="fas fa-table-list"></i> EXPORT REKAPITULASI PDF</button></div>
+                <div className="bg-teal-50 p-6 rounded-2xl border border-teal-200"><h4 className="font-bold text-teal-800 mb-4 flex items-center gap-2"><i className="fas fa-calendar-week text-teal-600"></i> Export Daftar Hadir Ringkas</h4><p className="text-sm text-teal-700 mb-4">Cetak DAFTAR HADIR PEGAWAI BULANAN format . Per lembaga, dengan pewarnaan kuning untuk keterlambatan (>07:00).</p><button onClick={exportDaftarHadirRingkas} className="w-full bg-teal-600 hover:bg-teal-700 text-white py-4 rounded-xl font-black shadow-lg flex items-center justify-center gap-3"><i className="fas fa-list-ul"></i> EXPORT DAFTAR HADIR KOMPAK</button></div>
+              </>
+            ) : (
+              <div className="col-span-3 bg-slate-50 p-6 rounded-2xl border border-slate-200 flex items-center justify-center"><p className="text-slate-500"><i className="fas fa-lock mr-2"></i>Anda tidak memiliki akses untuk mengekspor laporan.</p></div>
+            )}
+          </div>
+          <div className="bg-red-50 p-6 rounded-2xl border border-red-100 flex flex-col justify-between"><div><h4 className="font-bold text-red-800 mb-2 flex items-center gap-2"><i className="fas fa-radiation-alt text-red-600"></i> Zona Berbahaya</h4><p className="text-xs text-red-600/70 mb-6">Menghapus semua Data <b>Presensi</b>. Aksi ini permanen dan tidak bisa dibatalkan.</p>{!isAdmin&&<p className="text-xs text-red-600 font-bold mb-2">*Hanya Admin yang dapat mereset data</p>}</div>{isAdmin?(<button onClick={handleReset} className="w-full border-2 border-red-600 text-red-600 hover:bg-red-600 hover:text-white py-4 rounded-xl font-black transition flex items-center justify-center gap-2"><i className="fas fa-trash-alt"></i> RESET DATA PRESENSI</button>):(<button disabled className="w-full border-2 border-gray-400 text-gray-400 bg-gray-100 py-4 rounded-xl font-black cursor-not-allowed flex items-center justify-center gap-2"><i className="fas fa-trash-alt"></i> RESET (Terbatas untuk Admin)</button>)}</div>
+        </div>
+      );
+    };
+
+    // ======================= KOMPONEN ACTIVITY LOG =======================
+    const ActivityLog = ({ userRole }) => {
+      const [logs, setLogs] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [filterUsername, setFilterUsername] = useState('');
+      const [filterAction, setFilterAction] = useState('');
+      const [dateStart, setDateStart] = useState('');
+      const [dateEnd, setDateEnd] = useState('');
+      const [currentPage, setCurrentPage] = useState(1);
+      const [rowsPerPage, setRowsPerPage] = useState(10);
+      const canView = userRole === 'Admin';
+      const fetchLogs = async () => { if(!canView) return; setLoading(true); const res = await callAPI('getActivityLogs'); setLogs(res||[]); setLoading(false); };
+      useEffect(()=>{ if(canView) fetchLogs(); },[canView]);
+      const filtered = useMemo(()=>{ let result=logs; if(filterUsername) result=result.filter(log=>(log.Username||'').toLowerCase().includes(filterUsername.toLowerCase())); if(filterAction) result=result.filter(log=>(log.Action||'').toLowerCase().includes(filterAction.toLowerCase())); if(dateStart){ const start=new Date(dateStart); start.setHours(0,0,0,0); result=result.filter(log=>new Date(log.Timestamp)>=start); } if(dateEnd){ const end=new Date(dateEnd); end.setHours(23,59,59,999); result=result.filter(log=>new Date(log.Timestamp)<=end); } return result; },[logs,filterUsername,filterAction,dateStart,dateEnd]);
+      const totalItems = filtered.length;
+      const effectiveRowsPerPage = rowsPerPage===totalItems?totalItems:rowsPerPage;
+      const paginatedLogs = filtered.slice((currentPage-1)*effectiveRowsPerPage, currentPage*effectiveRowsPerPage);
+      if(!canView) return (<div className="bg-white p-8 rounded-2xl shadow-sm border text-center"><i className="fas fa-lock text-6xl text-gray-400 mb-4"></i><h3 className="text-xl font-bold text-gray-700">Akses Ditolak</h3><p className="text-gray-500 mt-2">Anda tidak memiliki hak akses untuk melihat Log Aktivitas. Hanya Admin yang diperbolehkan.</p></div>);
+      return (
+        <div className="space-y-6">
+          <div className="bg-white p-5 rounded-2xl shadow-sm border"><h3 className="font-bold text-xl text-slate-800 flex items-center gap-2"><i className="fas fa-history text-blue-600"></i> Log Monitoring</h3><p className="text-slate-500 text-sm mt-1">Riwayat login dan aktivitas pengguna.</p></div>
+          <div className="bg-white p-5 rounded-2xl shadow-sm border flex flex-wrap gap-4 items-center"><input type="text" placeholder="Cari Username..." className="border p-3 rounded-xl flex-1 text-sm outline-none focus:border-blue-500" value={filterUsername} onChange={e=>setFilterUsername(e.target.value)} /><input type="text" placeholder="Cari Aksi..." className="border p-3 rounded-xl flex-1 text-sm outline-none focus:border-blue-500" value={filterAction} onChange={e=>setFilterAction(e.target.value)} /><input type="date" placeholder="Mulai" className="border p-3 rounded-xl text-sm outline-none focus:border-blue-500" value={dateStart} onChange={e=>setDateStart(e.target.value)} /><input type="date" placeholder="Sampai" className="border p-3 rounded-xl text-sm outline-none focus:border-blue-500" value={dateEnd} onChange={e=>setDateEnd(e.target.value)} /><button onClick={()=>{ setFilterUsername(''); setFilterAction(''); setDateStart(''); setDateEnd(''); }} className="bg-gray-200 hover:bg-gray-300 px-4 py-3 rounded-xl font-bold text-sm transition">Reset Filter</button></div>
+          <div className="bg-white rounded-2xl shadow-sm border overflow-hidden"><div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead className="bg-blue-700 text-white border-b"><tr><th className="px-4 py-4">Timestamp</th><th className="px-4 py-4">Username</th><th className="px-4 py-4">Role</th><th className="px-4 py-4">Action</th><th className="px-4 py-4">Details</th></tr></thead><tbody className="divide-y text-slate-700">{paginatedLogs.length>0?paginatedLogs.map((log,i)=>(<tr key={i} className="hover:bg-slate-50 transition-colors"><td className="px-4 py-3 whitespace-nowrap">{log.Timestamp?new Date(log.Timestamp).toLocaleString('id-ID'):'-'}</td><td className="px-4 py-3 font-medium">{log.Username||'-'}</td><td className="px-4 py-3">{log.Role||'-'}</td><td className="px-4 py-3"><span className={`px-2 py-1 rounded text-[10px] font-black uppercase ${log.Action==='login'?'bg-green-100 text-green-700':'bg-red-100 text-red-700'}`}>{log.Action||'-'}</span></td><td className="px-4 py-3">{log.Details||'-'}</td></td>)):(<tr><td colSpan="5" className="text-center py-10 text-slate-400 italic">Tidak ada data log aktivitas.</td></tr>)}</tbody></table></div>{totalItems>0&&<TablePagination currentPage={currentPage} totalItems={totalItems} rowsPerPage={rowsPerPage} onPageChange={setCurrentPage} onRowsPerPageChange={(val)=>{ setRowsPerPage(val); setCurrentPage(1); }} />}</div>
+        </div>
+      );
+    };
+
+    // ======================= KOMPONEN PENGAJUAN PSW =======================
+    const PengajuanPSW = ({ user }) => {
+      const [pegawaiList, setPegawaiList] = useState([]);
+      const [formData, setFormData] = useState({ nip:'', jenis:'', tglAwal:'', tglAkhir:'' });
+      const [file, setFile] = useState(null);
+      const [loading, setLoading] = useState(false);
+      useEffect(()=>{ const fetchPegawai=async()=>{ if(!user||!user.lembaga) return; const res=await callAPI('getPegawaiByLembaga',user.lembaga); if(Array.isArray(res)) setPegawaiList(res); else setPegawaiList([]); }; fetchPegawai(); },[user]);
+      const handleFileChange=(e)=>{ const f=e.target.files[0]; if(f){ if(f.type!=='application/pdf'){ Swal.fire('Format Salah','Hanya dokumen PDF yang diizinkan.','warning'); e.target.value=''; return; } if(f.size>5*1024*1024){ Swal.fire('Terlalu Besar','Ukuran PDF maksimal 5MB.','warning'); e.target.value=''; return; } const reader=new FileReader(); reader.onload=()=>setFile({ name:f.name, base64:reader.result }); reader.readAsDataURL(f); } };
+      const handleSubmit=async(e)=>{ e.preventDefault(); if(!file){ Swal.fire('Peringatan','Dokumen PDF Bukti Dukung wajib dilampirkan.','warning'); return; } if(!formData.nip){ Swal.fire('Peringatan','Pilih pegawai terlebih dahulu.','warning'); return; } if(!formData.jenis){ Swal.fire('Peringatan','Pilih kategori pengajuan.','warning'); return; } if(!formData.tglAwal||!formData.tglAkhir){ Swal.fire('Peringatan','Tanggal mulai dan selesai harus diisi.','warning'); return; } const selectedPegawai=pegawaiList.find(p=>p.nip===formData.nip); if(!selectedPegawai){ Swal.fire('Error','Data pegawai tidak ditemukan.','error'); return; } setLoading(true); const payload={ lembaga:user.lembaga, namaPegawai:selectedPegawai.nama, nip:selectedPegawai.nip, jenis:formData.jenis, tglAwal:formData.tglAwal, tglAkhir:formData.tglAkhir, fileName:file.name, fileBase64:file.base64 }; const res=await callAPI('submitPengajuan',payload); setLoading(false); if(res.success){ Swal.fire({icon:'success',title:'Terkirim',text:'Pengajuan berhasil diteruskan ke Korwil.',confirmButtonColor:'#2563eb'}); setFormData({ nip:'', jenis:'', tglAwal:'', tglAkhir:'' }); setFile(null); document.getElementById('fileInput').value=''; }else{ Swal.fire('Gagal',res.message,'error'); } };
+      return (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 md:p-8">
+          <div className="border-b border-slate-100 pb-5 mb-6"><h3 className="text-xl font-bold text-slate-800">Form Pengajuan PSW</h3><p className="text-sm text-slate-500 mt-1">Lembaga: <span className="font-semibold text-blue-600">{user.lembaga}</span></p></div>
+          <form onSubmit={handleSubmit} className="space-y-6"><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div className="md:col-span-2"><label className="block text-sm font-semibold text-slate-700 mb-2">Pilih Pegawai</label><select required value={formData.nip} onChange={e=>setFormData({...formData,nip:e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none"><option value="" disabled>-- Pilih Pegawai --</option>{pegawaiList.map(p=><option key={p.nip} value={p.nip}>{p.nama} (NIP: {p.nip})</option>)}</select></div><div className="md:col-span-2"><label className="block text-sm font-semibold text-slate-700 mb-2">Kategori Pengajuan</label><div className="grid grid-cols-1 sm:grid-cols-3 gap-4">{['Sakit','Ijin','Dinas Luar'].map(item=>{ const isSelected=formData.jenis===item; return (<label key={item} className={`cursor-pointer border-2 rounded-xl p-4 flex flex-col items-center justify-center transition-all ${isSelected?'bg-blue-50 border-blue-500 text-blue-700 shadow-md':'bg-white border-slate-100 hover:border-slate-300 text-slate-500 hover:bg-slate-50'}`}><input type="radio" name="jenis" value={item} className="hidden" checked={isSelected} onChange={e=>setFormData({...formData,jenis:e.target.value})} required /><div className={`w-12 h-12 rounded-full mb-2 flex items-center justify-center text-xl ${isSelected?'bg-blue-100':'bg-slate-100'}`}><i className={`fas ${item==='Sakit'?'fa-briefcase-medical':item==='Ijin'?'fa-envelope-open-text':'fa-car-side'}`}></i></div><span className="font-bold text-sm">{item}</span></label>); })}</div></div><div><label className="block text-sm font-semibold text-slate-700 mb-2">Tanggal Mulai</label><input type="date" required value={formData.tglAwal} onChange={e=>setFormData({...formData,tglAwal:e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none" /></div><div><label className="block text-sm font-semibold text-slate-700 mb-2">Tanggal Selesai</label><input type="date" required min={formData.tglAwal} value={formData.tglAkhir} onChange={e=>setFormData({...formData,tglAkhir:e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none" /></div><div className="md:col-span-2"><label className="block text-sm font-semibold text-slate-700 mb-2">Lampiran Bukti Dukung (PDF)</label><div className={`border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center transition-all relative ${file?'border-green-400 bg-green-50':'border-slate-300 bg-slate-50 hover:bg-slate-100'}`}><input id="fileInput" type="file" accept=".pdf" onChange={handleFileChange} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" required />{file?(<div className="text-center"><div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-3 text-2xl"><i className="fas fa-file-check"></i></div><p className="font-bold text-slate-800 text-sm">{file.name}</p><p className="text-xs text-green-600 mt-1 font-semibold">Siap diunggah - Klik untuk mengganti</p></div>):(<div className="text-center"><div className="w-16 h-16 bg-blue-100 text-blue-500 rounded-full flex items-center justify-center mx-auto mb-3 text-2xl"><i className="fas fa-cloud-upload-alt"></i></div><p className="font-bold text-slate-700">Klik atau Tarik file PDF ke sini</p><p className="text-xs text-slate-500 mt-1">Maksimal ukuran file 5MB</p></div>)}</div></div></div><div className="pt-6 border-t border-slate-100 flex justify-end"><button type="submit" disabled={loading} className="w-full md:w-auto px-8 py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl font-bold text-sm shadow-lg shadow-blue-500/30 hover:opacity-90 transition-all disabled:opacity-70 flex items-center justify-center gap-2">{loading?<i className="fas fa-spinner fa-spin"></i>:<i className="fas fa-paper-plane"></i>}{loading?'Memproses Pengiriman...':'Kirim Pengajuan'}</button></div></form>
+        </div>
+      );
+    };
+
+    // ======================= APP UTAMA =======================
+    const App = () => {
+      const [user, setUser] = useState(null);
+      const [activeTab, setActiveTab] = useState('dashboard');
+      const [presensi, setPresensi] = useState([]);
+      const [ijin, setIjin] = useState([]);
+      const [pegawai, setPegawai] = useState([]);
+      const [loading, setLoading] = useState(false);
+
+      useEffect(() => {
+        const storedUser = localStorage.getItem('user');
+        if (!storedUser) {
+          window.location.href = '/';
+          return;
+        }
+        setUser(JSON.parse(storedUser));
+      }, []);
+
+      const fetchData = async () => {
+        if (!user) return;
+        setLoading(true);
+        try {
+          const [resP, resI, resPg] = await Promise.all([
+            callAPI('getPresensi'),
+            callAPI('getIjin'),
+            callAPI('getPegawai')
+          ]);
+          setPresensi(resP || []);
+          setIjin(resI || []);
+          setPegawai(resPg || []);
+        } catch(e) { console.error(e); }
+        setLoading(false);
+      };
+
+      useEffect(() => { if (user) fetchData(); }, [user]);
+
+      const enrichedPresensi = useMemo(() => enrichPresensiWithIjin(presensi, ijin), [presensi, ijin]);
+      const canAccessPegawai = user && (user.role === 'Admin' || user.role === 'Superuser' || user.role === 'User');
+      const canEditAllLembaga = user && (user.role === 'Admin' || user.role === 'Superuser' || user.role === 'User');
+      const userLembaga = !canEditAllLembaga ? (user ? user.role : '') : (user ? user.lembaga : '');
+
+      const tabs = [
+        { id:'dashboard', icon:'fa-chart-pie', label:'Dashboard Presensi' },
+        { id:'monitoring_presensi', icon:'fa-clipboard-list', label:'Monitoring Presensi' },
+        { id:'dokumen_ijin', icon:'fa-file-signature', label:'Dokumen Ijin (PSW)' },
+        { id:'pengajuan_psw', icon:'fa-file-upload', label:'Pengajuan PSW' },
+        ...(canAccessPegawai ? [{ id:'pegawai', icon:'fa-users', label:'Database Pegawai' }] : []),
+        { id:'monitoring_export', icon:'fa-desktop', label:'Monitoring & Ekspor' },
+        { id:'activity', icon:'fa-history', label:'Error Logs' }
+      ];
+
+      const handleLogout = () => {
+        Swal.fire({ title:'Yakin ingin keluar?', text:'Anda akan kembali ke halaman login.', icon:'question', showCancelButton:true, confirmButtonColor:'#d33', cancelButtonColor:'#334155', confirmButtonText:'Ya, Keluar', cancelButtonText:'Batal' }).then((result) => {
+          if (result.isConfirmed) {
+            localStorage.removeItem('user');
+            window.location.href = '/';
+          }
+        });
+      };
+
+      if (!user) return null;
+
+      return (
+        <div className="min-h-screen flex flex-col md:flex-row bg-slate-50">
+          <div className="w-full md:w-72 bg-white text-slate-800 flex flex-col shadow-lg z-40 border-r border-slate-200">
+            <div className="p-8 border-b border-slate-100 flex items-center gap-4 bg-gradient-to-br from-blue-600 to-blue-800"><div className="bg-white/20 w-12 h-12 rounded-2xl flex items-center justify-center shadow-inner overflow-hidden"><img src="https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/Lambang_Kabupaten_Ngawi_%28svg%29.svg/1280px-Lambang_Kabupaten_Ngawi_%28svg%29.svg.png" alt="Logo Ngawi" className="w-full h-full object-cover" /></div><div><span className="font-black text-xl tracking-tight text-white block">KORWIL SINE</span><span className="text-[10px] text-blue-200 font-bold uppercase tracking-widest">Dashboard Monitoring</span></div></div>
+            <nav className="flex-1 p-6 space-y-2">{tabs.map(tab => (<button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all duration-300 ${activeTab === tab.id ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-700'}`}><i className={`fas ${tab.icon} w-6 text-center text-lg`}></i> {tab.label}</button>))}</nav>
+            <div className="p-6 border-t border-slate-200 bg-slate-50"><div className="flex items-center gap-4 mb-6 px-2"><div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center border-2 border-blue-300 text-blue-600 font-black">{user.nama.charAt(0)}</div><div className="overflow-hidden"><div className="text-xs text-slate-500 font-bold uppercase tracking-tighter">Petugas:</div><div className="font-black text-sm text-slate-800 truncate">{user.nama}</div><div className="mt-1"><span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full text-[8px] font-black uppercase tracking-wider">{user.role}</span></div>{userLembaga && (<div className="mt-1 text-[10px] text-slate-400"><i className="fas fa-building mr-1"></i>{userLembaga}</div>)}</div></div><button onClick={handleLogout} className="w-full bg-white hover:bg-red-50 text-red-500 hover:text-red-700 py-3 rounded-xl font-bold transition-all border border-red-200 flex items-center justify-center gap-2 shadow-sm"><i className="fas fa-power-off"></i> KELUAR</button></div>
+          </div>
+          <div className="flex-1 flex flex-col h-screen overflow-hidden">
+            <header className="bg-white border-b px-8 py-5 flex justify-between items-center z-30 shadow-sm"><h2 className="text-2xl font-black text-slate-800 capitalize flex items-center gap-3"><span className="w-2 h-8 bg-blue-600 rounded-full"></span>{activeTab==='dashboard'&&'Dashboard Presensi'}{activeTab==='monitoring_presensi'&&'Monitoring Presensi'}{activeTab==='dokumen_ijin'&&'Dokumen Ijin (PSW)'}{activeTab==='pengajuan_psw'&&'Pengajuan PSW'}{activeTab==='pegawai'&&'Database Pegawai'}{activeTab==='monitoring_export'&&'Monitoring & Ekspor'}{activeTab==='activity'&&'Log Monitoring'}</h2><button onClick={fetchData} className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all border ${loading?'bg-blue-50 border-blue-200':'bg-white border-slate-200 hover:bg-blue-50'}`}><i className={`fas fa-sync-alt text-lg ${loading?'fa-spin text-blue-600':'text-slate-500'}`}></i></button></header>
+            <div className="flex-1 overflow-auto p-4 md:p-8">
+              {loading && presensi.length===0 && activeTab!=='pegawai' ? (<div className="h-full flex flex-col items-center justify-center space-y-6"><div className="loader border-4 border-blue-100 border-t-blue-600 rounded-full w-16 h-16"></div><div className="text-center"><span className="text-slate-800 font-black text-xl block">Menghubungkan ke Server...</span><span className="text-slate-400 text-sm">Sedang sinkronisasi</span></div></div>) : (<div className="max-w-7xl mx-auto">{activeTab==='dashboard'&&<Dashboard presensiData={enrichedPresensi} ijinData={ijin} pegawaiData={pegawai} />}{activeTab==='monitoring_presensi'&&<MonitoringPresensi data={enrichedPresensi} refreshData={fetchData} userRole={user.role} userLembaga={userLembaga} />}{activeTab==='dokumen_ijin'&&<DokumenIjin data={ijin} refreshData={fetchData} userRole={user.role} userLembaga={userLembaga} />}{activeTab==='pengajuan_psw'&&<PengajuanPSW user={user} />}{activeTab==='pegawai'&&canAccessPegawai&&<DatabasePegawai refreshParent={fetchData} userRole={user.role} />}{activeTab==='monitoring_export'&&<MonitoringExport presensiData={enrichedPresensi} ijinData={ijin} pegawaiData={pegawai} refreshData={fetchData} userRole={user.role} />}{activeTab==='activity'&&<ActivityLog userRole={user.role} />}</div>)}
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
