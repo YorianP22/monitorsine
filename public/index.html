@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login - Monitoring Presensi Korwil Sine</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { theme: { extend: { fontFamily: { sans: ['Inter', 'sans-serif'] } } } }
+  </script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <style>
+    ::-webkit-scrollbar { width: 6px; }
+    .loader { border-top-color: #0d6efd; animation: spinner 1.5s linear infinite; }
+    @keyframes spinner { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="bg-slate-50 font-sans">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState } = React;
+    const callAPI = async (action, ...args) => {
+      const res = await fetch('/api/proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, args })
+      });
+      return await res.json();
+    };
+    const Login = ({ onLogin }) => {
+      const [username, setUsername] = useState('');
+      const [password, setPassword] = useState('');
+      const [loading, setLoading] = useState(false);
+      const [showPassword, setShowPassword] = useState(false);
+      const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        const res = await callAPI('login', username, password);
+        if (res && res.success) {
+          localStorage.setItem('user', JSON.stringify(res.user));
+          window.location.href = '/dashboard.html';
+        } else {
+          Swal.fire('Error', 'Username atau password salah!', 'error');
+        }
+        setLoading(false);
+      };
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-100 px-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col md:flex-row">
+            <div className="md:w-1/2 p-8 lg:p-12 flex flex-col justify-center">
+              <div className="mb-8 text-center md:text-left"><div className="w-20 h-20 bg-blue-100 rounded-2xl flex items-center justify-center mx-auto md:mx-0 mb-4 shadow-lg"><i className="fas fa-fingerprint text-5xl text-blue-600"></i></div><h2 className="text-3xl font-black text-slate-800">Korwil Sine</h2><p className="text-slate-500 text-sm">Sistem Monitoring Presensi</p></div>
+              <form onSubmit={handleSubmit} className="space-y-5">
+                <div><label className="block text-xs font-bold uppercase text-slate-400 mb-1">Username</label><input type="text" required className="w-full px-5 py-4 border-2 border-slate-200 rounded-xl focus:ring-4 focus:ring-blue-200 focus:border-blue-600 outline-none transition" value={username} onChange={e=>setUsername(e.target.value)} /></div>
+                <div><label className="block text-xs font-bold uppercase text-slate-400 mb-1">Password</label><div className="relative"><input type={showPassword?"text":"password"} required className="w-full px-5 py-4 border-2 border-slate-200 rounded-xl focus:ring-4 focus:ring-blue-200 focus:border-blue-600 outline-none transition pr-12" value={password} onChange={e=>setPassword(e.target.value)} /><button type="button" className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-400 hover:text-blue-600" onClick={()=>setShowPassword(!showPassword)}><i className={`fas ${showPassword?'fa-eye-slash':'fa-eye'}`}></i></button></div></div>
+                <button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-black shadow-lg transition disabled:opacity-50 text-lg tracking-wider">{loading?'Memproses...':'MASUK'}</button>
+              </form>
+            </div>
+            <div className="hidden md:flex md:w-1/2 bg-gradient-to-br from-blue-600 to-indigo-800 p-12 flex-col justify-center items-center text-white">
+              <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/Lambang_Kabupaten_Ngawi_%28svg%29.svg/1280px-Lambang_Kabupaten_Ngawi_%28svg%29.svg.png" alt="Logo Ngawi" className="w-48 h-48 object-contain mb-8 drop-shadow-2xl" />
+              <h3 className="text-4xl font-black text-center leading-tight">Monitoring Presensi Korwil Sine</h3>
+              <p className="text-lg text-center mt-4 text-blue-100">Dinas Pendidikan Kabupaten Ngawi</p>
+              <div className="mt-8 flex gap-4 text-sm bg-white/20 py-3 px-6 rounded-full backdrop-blur-sm"><i className="fas fa-calendar-alt"></i><span>{new Date().toLocaleDateString('id-ID',{day:'numeric',month:'long',year:'numeric'})}</span></div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<Login />);
+  </script>
+</body>
+</html>
