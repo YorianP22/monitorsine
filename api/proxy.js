@@ -1,4 +1,3 @@
-// api/proxy.js
 const express = require('express');
 const cors = require('cors');
 
@@ -6,10 +5,9 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// Endpoint Google Apps Script yang sudah berisi semua fungsi (doPost)
+// Ganti dengan URL Web App Google Apps Script Anda yang sudah di-deploy
 const GAS_ENDPOINT = 'https://script.google.com/macros/s/AKfycbyjzVmFk2YosZLXEsSdAdDy0Y_2Qw6tGH-23Mj-94zmS7t9_sLfn2SHEUznbojwpyI-/exec';
 
-// Proxy untuk semua permintaan POST
 app.post('/api/proxy', async (req, res) => {
   try {
     const response = await fetch(GAS_ENDPOINT, {
@@ -17,7 +15,7 @@ app.post('/api/proxy', async (req, res) => {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(req.body), // { action, args }
+      body: JSON.stringify(req.body),
     });
 
     const data = await response.json();
@@ -28,7 +26,6 @@ app.post('/api/proxy', async (req, res) => {
   }
 });
 
-// Tangani OPTIONS untuk CORS preflight
 app.options('/api/proxy', cors());
 
 module.exports = app;
